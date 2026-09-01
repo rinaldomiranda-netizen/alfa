@@ -1,0 +1,20 @@
+{
+  "nome": "powerpoint",
+  "descricao": "Automação do Microsoft PowerPoint via COM: abrir, criar apresentação, novo slide, definir título/conteúdo, salvar.",
+  "versao": "1.0.0",
+  "autor": "ALFA core",
+  "permissoes": ["FILES"],
+  "ferramentas": [
+    "powerpoint_abrir",
+    "powerpoint_criar_apresentacao",
+    "powerpoint_novo_slide",
+    "powerpoint_definir_titulo",
+    "powerpoint_definir_conteudo",
+    "powerpoint_salvar"
+  ],
+  "intencoes": [],
+  "configuracao": {},
+  "dependencias": ["pywin32"],
+  "compatibilidade": {"windows": true, "requer": "Microsoft PowerPoint instalado"},
+  "offline": true
+}

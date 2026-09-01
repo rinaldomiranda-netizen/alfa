@@ -1,0 +1,49 @@
+{
+  "assistente": "ALFA",
+  "idioma": "pt-BR",
+  "voz": {
+    "usar_windows_speech": true,
+    "modelo_whisper_fallback": "small",
+    "timeout_escuta_segundos": 8
+  },
+  "voz_saida": {
+    "motor": "edge_tts",
+    "motor_fallback": "pyttsx3",
+    "opcoes_motor": {
+      "edge_tts": {
+        "voz": "pt-BR-FranciscaNeural",
+        "taxa_base": "+0%",
+        "volume_base": "+0%"
+      },
+      "azure": {
+        "voz": "pt-BR-ThalitaMultilingualNeural"
+      },
+      "elevenlabs": {
+        "modelo": "eleven_flash_v2_5"
+      },
+      "pyttsx3": {
+        "taxa_fala": 190
+      }
+    }
+  },
+  "personalidade": {
+    "nome_usuario": "Rinaldo",
+    "nome_assistente": "Beta"
+  },
+  "mouse": {
+    "passo_pixels": 120,
+    "duracao_movimento": 0.05
+  },
+  "ia_fallback": {
+    "ativo": true,
+    "url": "http://127.0.0.1:11434/api/chat",
+    "modelo": "qwen2.5-coder:7b"
+  },
+  "pesquisa": {
+    "palavras_chave_janela": ["central de pesquisas", "nova entrevista", "entrevistas"],
+    "caminho_local": "C:\\Users\\Rinaldo CYBERSEGURYT\\Desktop\\Central_de_Pesquisas_Online_Fase2\\Central_de_Pesquisas_Online\\index.html",
+    "url_producao": null
+  },
+  "inicializacao_automatica_windows": false,
+  "modo_beta": "pessoal"
+}

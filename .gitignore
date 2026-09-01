@@ -1,0 +1,51 @@
+﻿# Python
+.venv311/
+__pycache__/
+*.pyc
+*.pyo
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local configuration
+**/local.properties
+
+# Gradle
+**/.gradle/
+
+# Claude local files
+.claude/settings.local.json
+.claude/*.lock
+
+# Builds / APKs / distributions
+dist/
+build/
+*.apk
+*.aab
+
+# Backups and archives
+backup_alfa_*/
+*.zip
+
+# Device-specific licenses
+*.beta-license
+
+# Audio/test captures
+*.wav
+
+# Runtime/local state
+memory/ambiente.json
+memory/fila_sync.json
+
+# Diagnostics / temporary files
+_diag2/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

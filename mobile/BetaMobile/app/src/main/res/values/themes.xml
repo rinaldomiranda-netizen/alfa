@@ -1,0 +1,10 @@
+<resources>
+    <!-- Tema nativo (janela/status bar antes do Compose desenhar o
+         conteúdo) — combina com a identidade escura/azul-neon pedida,
+         para não haver um "flash branco" antes da Splash aparecer. -->
+    <style name="Theme.BetaMobile" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/fundo_beta</item>
+        <item name="android:statusBarColor">@color/fundo_beta</item>
+        <item name="android:navigationBarColor">@color/fundo_beta</item>
+    </style>
+</resources>

@@ -1,0 +1,6 @@
+Pasta de trabalho da BETA PORTÁTIL — arquivos gerados/usados durante o
+uso do portátil (ex.: documentos criados a pedido do usuário) ficam
+aqui, nunca misturados com o código-fonte ou com a memória do ALFA
+pessoal (memory/atendimentos/).
+
+Vazia por padrão — nada aqui é lido automaticamente pelo núcleo.

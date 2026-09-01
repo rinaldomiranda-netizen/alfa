@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- minSdk do app é 26, então o ícone adaptativo (vetor, qualquer
+     densidade) é suficiente — sem precisar de mipmap-hdpi/xhdpi/...
+     em bitmap, o que evitaria exatamente a "resolução inadequada"
+     que o pedido pediu para não usar. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

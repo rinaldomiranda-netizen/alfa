@@ -1,0 +1,21 @@
+{
+  "nome": "core",
+  "descricao": "Capacidades nativas do núcleo BETA: abrir/fechar programas, arquivos e pastas, navegador, mouse/teclado, leitura de tela (OCR + UI Automation), rolagem, atalhos. Não é uma skill instalável separada — descreve o Tool Registry embutido (agente/registro_padrao.py) para fins de descoberta.",
+  "versao": "1.0.0",
+  "autor": "ALFA core",
+  "permissoes": ["BASIC", "FILES", "SYSTEM"],
+  "ferramentas": [
+    "abrir_aplicativo", "fechar_aplicativo", "localizar_arquivo", "criar_pasta",
+    "renomear", "listar_pasta", "criar_arquivo", "copiar_arquivo", "mover_arquivo",
+    "abrir_navegador", "pesquisar_navegador", "navegador_voltar", "navegador_avancar",
+    "fechar_aba", "ler_pagina", "ler_tela", "encontrar_na_tela", "rolar_para_elemento"
+  ],
+  "intencoes": [
+    "ABRIR", "FECHAR", "ABRIR_ARQUIVO", "ABRIR_PASTA", "LER_TELA_AGENTE",
+    "ROLAR_ATE_ENCONTRAR", "LOCALIZAR", "PREENCHER_CAMPO", "CLICAR_ELEMENTO"
+  ],
+  "configuracao": {},
+  "dependencias": [],
+  "compatibilidade": {"windows": true},
+  "offline": true
+}

@@ -1,0 +1,39 @@
+Ferramentas do BETA_OWNER — licenciamento do BETA
+===================================================
+
+beta_owner_private_key.pem
+---------------------------
+CHAVE PRIVADA REAL (RSA 2048). NUNCA copie este arquivo para:
+- mobile/BetaMobile (nem em assets, nem em nenhuma pasta do app)
+- dist/BETA_MOBILE
+- dist/BETA_PORTATIL
+- qualquer pendrive/instalação que saia desta máquina
+
+Ela só deve existir aqui, na máquina do proprietário, e (no futuro)
+na infraestrutura do BETA-CLOUD para ativação remota. Se este arquivo
+vazar, qualquer pessoa pode emitir licenças falsas — trate como uma
+senha mestra.
+
+beta_owner_public_key.pem
+---------------------------
+Chave pública correspondente. Esta SIM está embutida no app
+(mobile/BetaMobile/app/src/main/kotlin/com/beta/mobile/licensing/LicenseVerifier.kt)
+para verificar licenças — não é segredo, pode circular livremente.
+
+emitir_licenca.py
+------------------
+Script que o BETA_OWNER roda NESTA máquina para gerar um arquivo
+.beta-license assinado para um device_id específico. Exemplo:
+
+  python emitir_licenca.py --device-id "3f7c...-uuid" \
+      --customer-id "cliente-teste" --modulos TOTEM,APLICATIVO,CATALOGO,ACESSIBILIDADE \
+      --dias-validade 365 --saida teste.beta-license
+
+O arquivo gerado (.beta-license) é o que se leva presencialmente ao
+equipamento para "Ativação local" (ver painel BETA_OWNER no app).
+
+Isto NÃO substitui ativação remota via BETA-CLOUD — essa parte
+continua pendente porque exigiria criar tabelas novas
+(licenses/activations/revogações) no projeto BETA-CLOUD real, o que
+não foi autorizado nesta sessão (schema real já foi definido e não
+deve ser alterado sem confirmação explícita do dono do projeto).

@@ -1,0 +1,20 @@
+{
+  "nome": "word",
+  "descricao": "Automação do Microsoft Word via COM: abrir, criar documento, escrever, localizar, substituir, salvar.",
+  "versao": "1.0.0",
+  "autor": "ALFA core",
+  "permissoes": ["FILES"],
+  "ferramentas": [
+    "word_abrir",
+    "word_novo_documento",
+    "word_escrever",
+    "word_localizar",
+    "word_substituir",
+    "word_salvar"
+  ],
+  "intencoes": ["TAREFA_ABRIR_E_ESCREVER"],
+  "configuracao": {},
+  "dependencias": ["pywin32"],
+  "compatibilidade": {"windows": true, "requer": "Microsoft Word instalado"},
+  "offline": true
+}

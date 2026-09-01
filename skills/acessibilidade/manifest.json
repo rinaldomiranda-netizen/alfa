@@ -1,0 +1,13 @@
+{
+  "nome": "acessibilidade",
+  "descricao": "Leitura de tela por voz, navegação sem mouse/teclado, wake word e barge-in — recursos de acessibilidade universal já embutidos no núcleo (voice/, vision/screen_vision.py, agente/leitura_tela.py). Não é uma skill instalável separada — descrita aqui para fins de descoberta/marketplace.",
+  "versao": "1.0.0",
+  "autor": "ALFA core",
+  "permissoes": ["BASIC"],
+  "ferramentas": ["ler_tela", "encontrar_na_tela", "rolar_para_elemento"],
+  "intencoes": ["LER_TELA_AGENTE", "ROLAR_ATE_ENCONTRAR", "REPETIR"],
+  "configuracao": {},
+  "dependencias": [],
+  "compatibilidade": {"windows": true},
+  "offline": true
+}

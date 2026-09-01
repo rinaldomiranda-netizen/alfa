@@ -1,0 +1,22 @@
+{
+  "nome": "excel",
+  "descricao": "Automação do Microsoft Excel via COM: abrir, localizar valor(es), selecionar célula, definir/ler valor, localizar e substituir, salvar.",
+  "versao": "1.0.0",
+  "autor": "ALFA core",
+  "permissoes": ["FILES"],
+  "ferramentas": [
+    "excel_abrir",
+    "excel_localizar_valor",
+    "excel_localizar_todos",
+    "excel_selecionar_celula",
+    "excel_definir_valor",
+    "excel_ler_valor",
+    "excel_localizar_e_substituir",
+    "excel_salvar"
+  ],
+  "intencoes": ["TAREFA_EXCEL_PROCURAR", "TAREFA_EXCEL_SUBSTITUIR"],
+  "configuracao": {},
+  "dependencias": ["pywin32"],
+  "compatibilidade": {"windows": true, "requer": "Microsoft Excel instalado"},
+  "offline": true
+}

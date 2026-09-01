@@ -1,0 +1,813 @@
+{
+  "aviso": "Catálogo de TESTE/DEMO local (Farmácia), só para demonstrar a capacidade de consulta a um sistema comercial. Não é um estoque real, não processa venda nem pagamento real — qualquer pagamento simulado é sempre identificado como PAGAMENTO DEMO.",
+  "produtos": [
+    {
+      "nome": "Dipirona 500mg",
+      "preco": 8.9,
+      "categoria": "analgesico",
+      "marca": "Genérico",
+      "estoque": 50,
+      "descricao": "Dipirona 500mg — categoria analgesico, marca Genérico."
+    },
+    {
+      "nome": "Dipirona Gotas 10ml",
+      "preco": 11.5,
+      "categoria": "analgesico",
+      "marca": "EMS",
+      "estoque": 3,
+      "descricao": "Dipirona Gotas 10ml — categoria analgesico, marca EMS."
+    },
+    {
+      "nome": "Paracetamol 750mg",
+      "preco": 7.5,
+      "categoria": "analgesico",
+      "marca": "Neo Química",
+      "estoque": 0,
+      "descricao": "Paracetamol 750mg — categoria analgesico, marca Neo Química."
+    },
+    {
+      "nome": "Paracetamol 500mg",
+      "preco": 6.2,
+      "categoria": "analgesico",
+      "marca": "Medley",
+      "estoque": 12,
+      "descricao": "Paracetamol 500mg — categoria analgesico, marca Medley."
+    },
+    {
+      "nome": "Ibuprofeno 400mg",
+      "preco": 12.3,
+      "categoria": "analgesico",
+      "marca": "Eurofarma",
+      "estoque": 8,
+      "descricao": "Ibuprofeno 400mg — categoria analgesico, marca Eurofarma."
+    },
+    {
+      "nome": "Ibuprofeno 600mg",
+      "preco": 15.4,
+      "categoria": "analgesico",
+      "marca": "Genérico",
+      "estoque": 8,
+      "descricao": "Ibuprofeno 600mg — categoria analgesico, marca Genérico."
+    },
+    {
+      "nome": "Naproxeno 500mg",
+      "preco": 18.9,
+      "categoria": "analgesico",
+      "marca": "EMS",
+      "estoque": 5,
+      "descricao": "Naproxeno 500mg — categoria analgesico, marca EMS."
+    },
+    {
+      "nome": "Aspirina 500mg",
+      "preco": 9.8,
+      "categoria": "analgesico",
+      "marca": "Neo Química",
+      "estoque": 3,
+      "descricao": "Aspirina 500mg — categoria analgesico, marca Neo Química."
+    },
+    {
+      "nome": "Cetoprofeno 100mg",
+      "preco": 21.0,
+      "categoria": "analgesico",
+      "marca": "Medley",
+      "estoque": 50,
+      "descricao": "Cetoprofeno 100mg — categoria analgesico, marca Medley."
+    },
+    {
+      "nome": "Diclofenaco Sódico 50mg",
+      "preco": 13.7,
+      "categoria": "analgesico",
+      "marca": "Eurofarma",
+      "estoque": 30,
+      "descricao": "Diclofenaco Sódico 50mg — categoria analgesico, marca Eurofarma."
+    },
+    {
+      "nome": "Nimesulida 100mg",
+      "preco": 14.2,
+      "categoria": "analgesico",
+      "marca": "Genérico",
+      "estoque": 3,
+      "descricao": "Nimesulida 100mg — categoria analgesico, marca Genérico."
+    },
+    {
+      "nome": "Novalgina Gotas",
+      "preco": 12.9,
+      "categoria": "analgesico",
+      "marca": "EMS",
+      "estoque": 40,
+      "descricao": "Novalgina Gotas — categoria analgesico, marca EMS."
+    },
+    {
+      "nome": "Tylenol 750mg",
+      "preco": 16.9,
+      "categoria": "antitermico",
+      "marca": "Genérico",
+      "estoque": 20,
+      "descricao": "Tylenol 750mg — categoria antitermico, marca Genérico."
+    },
+    {
+      "nome": "Tylenol Bebê Gotas",
+      "preco": 19.5,
+      "categoria": "antitermico",
+      "marca": "Johnson & Johnson",
+      "estoque": 0,
+      "descricao": "Tylenol Bebê Gotas — categoria antitermico, marca Johnson & Johnson."
+    },
+    {
+      "nome": "Antitérmico Infantil",
+      "preco": 14.8,
+      "categoria": "antitermico",
+      "marca": "Sanofi",
+      "estoque": 0,
+      "descricao": "Antitérmico Infantil — categoria antitermico, marca Sanofi."
+    },
+    {
+      "nome": "Vitamina C 1g",
+      "preco": 15.9,
+      "categoria": "vitamina",
+      "marca": "Centrum",
+      "estoque": 3,
+      "descricao": "Vitamina C 1g — categoria vitamina, marca Centrum."
+    },
+    {
+      "nome": "Vitamina C 500mg",
+      "preco": 11.2,
+      "categoria": "vitamina",
+      "marca": "Redoxon",
+      "estoque": 8,
+      "descricao": "Vitamina C 500mg — categoria vitamina, marca Redoxon."
+    },
+    {
+      "nome": "Vitamina D3 2000UI",
+      "preco": 22.0,
+      "categoria": "vitamina",
+      "marca": "Addera",
+      "estoque": 8,
+      "descricao": "Vitamina D3 2000UI — categoria vitamina, marca Addera."
+    },
+    {
+      "nome": "Vitamina D3 7000UI",
+      "preco": 34.9,
+      "categoria": "vitamina",
+      "marca": "EMS",
+      "estoque": 30,
+      "descricao": "Vitamina D3 7000UI — categoria vitamina, marca EMS."
+    },
+    {
+      "nome": "Complexo B",
+      "preco": 18.5,
+      "categoria": "vitamina",
+      "marca": "Sanofi",
+      "estoque": 40,
+      "descricao": "Complexo B — categoria vitamina, marca Sanofi."
+    },
+    {
+      "nome": "Vitamina E 400mg",
+      "preco": 24.3,
+      "categoria": "vitamina",
+      "marca": "Centrum",
+      "estoque": 0,
+      "descricao": "Vitamina E 400mg — categoria vitamina, marca Centrum."
+    },
+    {
+      "nome": "Polivitamínico Adulto",
+      "preco": 39.9,
+      "categoria": "vitamina",
+      "marca": "Redoxon",
+      "estoque": 30,
+      "descricao": "Polivitamínico Adulto — categoria vitamina, marca Redoxon."
+    },
+    {
+      "nome": "Polivitamínico Infantil",
+      "preco": 32.5,
+      "categoria": "vitamina",
+      "marca": "Addera",
+      "estoque": 8,
+      "descricao": "Polivitamínico Infantil — categoria vitamina, marca Addera."
+    },
+    {
+      "nome": "Ômega 3 1000mg",
+      "preco": 45.0,
+      "categoria": "vitamina",
+      "marca": "EMS",
+      "estoque": 50,
+      "descricao": "Ômega 3 1000mg — categoria vitamina, marca EMS."
+    },
+    {
+      "nome": "Zinco 50mg",
+      "preco": 19.9,
+      "categoria": "vitamina",
+      "marca": "Sanofi",
+      "estoque": 30,
+      "descricao": "Zinco 50mg — categoria vitamina, marca Sanofi."
+    },
+    {
+      "nome": "Magnésio Dimalato",
+      "preco": 27.8,
+      "categoria": "vitamina",
+      "marca": "Centrum",
+      "estoque": 20,
+      "descricao": "Magnésio Dimalato — categoria vitamina, marca Centrum."
+    },
+    {
+      "nome": "Ferro Quelato",
+      "preco": 29.9,
+      "categoria": "vitamina",
+      "marca": "Redoxon",
+      "estoque": 8,
+      "descricao": "Ferro Quelato — categoria vitamina, marca Redoxon."
+    },
+    {
+      "nome": "Soro Fisiológico 500ml",
+      "preco": 6.0,
+      "categoria": "higiene",
+      "marca": "Genérico",
+      "estoque": 25,
+      "descricao": "Soro Fisiológico 500ml — categoria higiene, marca Genérico."
+    },
+    {
+      "nome": "Soro Fisiológico 250ml",
+      "preco": 4.5,
+      "categoria": "higiene",
+      "marca": "Rioquímica",
+      "estoque": 40,
+      "descricao": "Soro Fisiológico 250ml — categoria higiene, marca Rioquímica."
+    },
+    {
+      "nome": "Álcool em Gel 70% 500ml",
+      "preco": 9.9,
+      "categoria": "higiene",
+      "marca": "Cremer",
+      "estoque": 12,
+      "descricao": "Álcool em Gel 70% 500ml — categoria higiene, marca Cremer."
+    },
+    {
+      "nome": "Álcool 70% 1L",
+      "preco": 14.5,
+      "categoria": "higiene",
+      "marca": "Johnson & Johnson",
+      "estoque": 0,
+      "descricao": "Álcool 70% 1L — categoria higiene, marca Johnson & Johnson."
+    },
+    {
+      "nome": "Álcool em Gel 70% 1L",
+      "preco": 16.9,
+      "categoria": "higiene",
+      "marca": "Genérico",
+      "estoque": 5,
+      "descricao": "Álcool em Gel 70% 1L — categoria higiene, marca Genérico."
+    },
+    {
+      "nome": "Máscara Cirúrgica (pacote 50un)",
+      "preco": 22.0,
+      "categoria": "higiene",
+      "marca": "Rioquímica",
+      "estoque": 20,
+      "descricao": "Máscara Cirúrgica (pacote 50un) — categoria higiene, marca Rioquímica."
+    },
+    {
+      "nome": "Luva Descartável (caixa 100un)",
+      "preco": 34.9,
+      "categoria": "higiene",
+      "marca": "Cremer",
+      "estoque": 15,
+      "descricao": "Luva Descartável (caixa 100un) — categoria higiene, marca Cremer."
+    },
+    {
+      "nome": "Algodão Hidrófilo 25g",
+      "preco": 5.9,
+      "categoria": "higiene",
+      "marca": "Johnson & Johnson",
+      "estoque": 12,
+      "descricao": "Algodão Hidrófilo 25g — categoria higiene, marca Johnson & Johnson."
+    },
+    {
+      "nome": "Gaze Estéril (pacote)",
+      "preco": 7.4,
+      "categoria": "higiene",
+      "marca": "Genérico",
+      "estoque": 5,
+      "descricao": "Gaze Estéril (pacote) — categoria higiene, marca Genérico."
+    },
+    {
+      "nome": "Esparadrapo 10cmx4,5m",
+      "preco": 12.3,
+      "categoria": "higiene",
+      "marca": "Rioquímica",
+      "estoque": 8,
+      "descricao": "Esparadrapo 10cmx4,5m — categoria higiene, marca Rioquímica."
+    },
+    {
+      "nome": "Band-Aid (caixa)",
+      "preco": 8.9,
+      "categoria": "higiene",
+      "marca": "Cremer",
+      "estoque": 15,
+      "descricao": "Band-Aid (caixa) — categoria higiene, marca Cremer."
+    },
+    {
+      "nome": "Cotonete (pacote)",
+      "preco": 4.2,
+      "categoria": "higiene",
+      "marca": "Johnson & Johnson",
+      "estoque": 3,
+      "descricao": "Cotonete (pacote) — categoria higiene, marca Johnson & Johnson."
+    },
+    {
+      "nome": "Protetor Solar FPS 60",
+      "preco": 45.0,
+      "categoria": "dermocosmetico",
+      "marca": "La Roche-Posay",
+      "estoque": 3,
+      "descricao": "Protetor Solar FPS 60 — categoria dermocosmetico, marca La Roche-Posay."
+    },
+    {
+      "nome": "Protetor Solar FPS 30",
+      "preco": 38.9,
+      "categoria": "dermocosmetico",
+      "marca": "Eucerin",
+      "estoque": 20,
+      "descricao": "Protetor Solar FPS 30 — categoria dermocosmetico, marca Eucerin."
+    },
+    {
+      "nome": "Protetor Solar Facial FPS 50",
+      "preco": 52.0,
+      "categoria": "dermocosmetico",
+      "marca": "Vichy",
+      "estoque": 3,
+      "descricao": "Protetor Solar Facial FPS 50 — categoria dermocosmetico, marca Vichy."
+    },
+    {
+      "nome": "Hidratante Corporal 400ml",
+      "preco": 29.9,
+      "categoria": "dermocosmetico",
+      "marca": "Nivea",
+      "estoque": 15,
+      "descricao": "Hidratante Corporal 400ml — categoria dermocosmetico, marca Nivea."
+    },
+    {
+      "nome": "Hidratante Facial 50g",
+      "preco": 34.5,
+      "categoria": "dermocosmetico",
+      "marca": "Cetaphil",
+      "estoque": 15,
+      "descricao": "Hidratante Facial 50g — categoria dermocosmetico, marca Cetaphil."
+    },
+    {
+      "nome": "Sabonete Facial 150ml",
+      "preco": 27.9,
+      "categoria": "dermocosmetico",
+      "marca": "La Roche-Posay",
+      "estoque": 40,
+      "descricao": "Sabonete Facial 150ml — categoria dermocosmetico, marca La Roche-Posay."
+    },
+    {
+      "nome": "Repelente de Insetos 100ml",
+      "preco": 24.9,
+      "categoria": "dermocosmetico",
+      "marca": "Eucerin",
+      "estoque": 12,
+      "descricao": "Repelente de Insetos 100ml — categoria dermocosmetico, marca Eucerin."
+    },
+    {
+      "nome": "Creme para Assaduras",
+      "preco": 18.5,
+      "categoria": "dermocosmetico",
+      "marca": "Vichy",
+      "estoque": 0,
+      "descricao": "Creme para Assaduras — categoria dermocosmetico, marca Vichy."
+    },
+    {
+      "nome": "Protetor Labial FPS 15",
+      "preco": 12.9,
+      "categoria": "dermocosmetico",
+      "marca": "Nivea",
+      "estoque": 25,
+      "descricao": "Protetor Labial FPS 15 — categoria dermocosmetico, marca Nivea."
+    },
+    {
+      "nome": "Descongestionante Nasal Spray",
+      "preco": 16.9,
+      "categoria": "gripe resfriado",
+      "marca": "EMS",
+      "estoque": 30,
+      "descricao": "Descongestionante Nasal Spray — categoria gripe resfriado, marca EMS."
+    },
+    {
+      "nome": "Xarope para Tosse Seca 120ml",
+      "preco": 21.9,
+      "categoria": "gripe resfriado",
+      "marca": "GSK",
+      "estoque": 3,
+      "descricao": "Xarope para Tosse Seca 120ml — categoria gripe resfriado, marca GSK."
+    },
+    {
+      "nome": "Xarope para Tosse com Catarro 120ml",
+      "preco": 22.9,
+      "categoria": "gripe resfriado",
+      "marca": "Bayer",
+      "estoque": 20,
+      "descricao": "Xarope para Tosse com Catarro 120ml — categoria gripe resfriado, marca Bayer."
+    },
+    {
+      "nome": "Antigripal em Pó (sachê)",
+      "preco": 6.5,
+      "categoria": "gripe resfriado",
+      "marca": "Genérico",
+      "estoque": 3,
+      "descricao": "Antigripal em Pó (sachê) — categoria gripe resfriado, marca Genérico."
+    },
+    {
+      "nome": "Pastilha para Garganta (embalagem)",
+      "preco": 9.9,
+      "categoria": "gripe resfriado",
+      "marca": "EMS",
+      "estoque": 30,
+      "descricao": "Pastilha para Garganta (embalagem) — categoria gripe resfriado, marca EMS."
+    },
+    {
+      "nome": "Solução Nasal Infantil",
+      "preco": 14.2,
+      "categoria": "gripe resfriado",
+      "marca": "GSK",
+      "estoque": 12,
+      "descricao": "Solução Nasal Infantil — categoria gripe resfriado, marca GSK."
+    },
+    {
+      "nome": "Antiácido Efervescente",
+      "preco": 11.9,
+      "categoria": "digestivo",
+      "marca": "EMS",
+      "estoque": 50,
+      "descricao": "Antiácido Efervescente — categoria digestivo, marca EMS."
+    },
+    {
+      "nome": "Omeprazol 20mg",
+      "preco": 13.5,
+      "categoria": "digestivo",
+      "marca": "Medley",
+      "estoque": 40,
+      "descricao": "Omeprazol 20mg — categoria digestivo, marca Medley."
+    },
+    {
+      "nome": "Domperidona 10mg",
+      "preco": 17.9,
+      "categoria": "digestivo",
+      "marca": "Genérico",
+      "estoque": 15,
+      "descricao": "Domperidona 10mg — categoria digestivo, marca Genérico."
+    },
+    {
+      "nome": "Simeticona Gotas",
+      "preco": 15.3,
+      "categoria": "digestivo",
+      "marca": "Sanofi",
+      "estoque": 40,
+      "descricao": "Simeticona Gotas — categoria digestivo, marca Sanofi."
+    },
+    {
+      "nome": "Carvão Ativado",
+      "preco": 12.8,
+      "categoria": "digestivo",
+      "marca": "EMS",
+      "estoque": 8,
+      "descricao": "Carvão Ativado — categoria digestivo, marca EMS."
+    },
+    {
+      "nome": "Probiótico Sachê (caixa)",
+      "preco": 42.9,
+      "categoria": "digestivo",
+      "marca": "Medley",
+      "estoque": 3,
+      "descricao": "Probiótico Sachê (caixa) — categoria digestivo, marca Medley."
+    },
+    {
+      "nome": "Laxante Suave",
+      "preco": 16.4,
+      "categoria": "digestivo",
+      "marca": "Genérico",
+      "estoque": 0,
+      "descricao": "Laxante Suave — categoria digestivo, marca Genérico."
+    },
+    {
+      "nome": "Soro de Reidratação Oral",
+      "preco": 5.5,
+      "categoria": "digestivo",
+      "marca": "Sanofi",
+      "estoque": 50,
+      "descricao": "Soro de Reidratação Oral — categoria digestivo, marca Sanofi."
+    },
+    {
+      "nome": "Loratadina 10mg",
+      "preco": 14.9,
+      "categoria": "alergia",
+      "marca": "EMS",
+      "estoque": 8,
+      "descricao": "Loratadina 10mg — categoria alergia, marca EMS."
+    },
+    {
+      "nome": "Desloratadina 5mg",
+      "preco": 19.9,
+      "categoria": "alergia",
+      "marca": "Genérico",
+      "estoque": 12,
+      "descricao": "Desloratadina 5mg — categoria alergia, marca Genérico."
+    },
+    {
+      "nome": "Cetirizina 10mg",
+      "preco": 16.5,
+      "categoria": "alergia",
+      "marca": "GSK",
+      "estoque": 3,
+      "descricao": "Cetirizina 10mg — categoria alergia, marca GSK."
+    },
+    {
+      "nome": "Pomada Antialérgica",
+      "preco": 18.9,
+      "categoria": "alergia",
+      "marca": "EMS",
+      "estoque": 8,
+      "descricao": "Pomada Antialérgica — categoria alergia, marca EMS."
+    },
+    {
+      "nome": "Fralda Infantil P (pacote)",
+      "preco": 39.9,
+      "categoria": "bebe infantil",
+      "marca": "Johnson's Baby",
+      "estoque": 3,
+      "descricao": "Fralda Infantil P (pacote) — categoria bebe infantil, marca Johnson's Baby."
+    },
+    {
+      "nome": "Fralda Infantil M (pacote)",
+      "preco": 42.9,
+      "categoria": "bebe infantil",
+      "marca": "Pampers",
+      "estoque": 20,
+      "descricao": "Fralda Infantil M (pacote) — categoria bebe infantil, marca Pampers."
+    },
+    {
+      "nome": "Fralda Infantil G (pacote)",
+      "preco": 45.9,
+      "categoria": "bebe infantil",
+      "marca": "Huggies",
+      "estoque": 12,
+      "descricao": "Fralda Infantil G (pacote) — categoria bebe infantil, marca Huggies."
+    },
+    {
+      "nome": "Lenço Umedecido (pacote)",
+      "preco": 12.9,
+      "categoria": "bebe infantil",
+      "marca": "Genérico",
+      "estoque": 25,
+      "descricao": "Lenço Umedecido (pacote) — categoria bebe infantil, marca Genérico."
+    },
+    {
+      "nome": "Pomada para Assadura Infantil",
+      "preco": 19.9,
+      "categoria": "bebe infantil",
+      "marca": "Johnson's Baby",
+      "estoque": 50,
+      "descricao": "Pomada para Assadura Infantil — categoria bebe infantil, marca Johnson's Baby."
+    },
+    {
+      "nome": "Shampoo Infantil 200ml",
+      "preco": 17.5,
+      "categoria": "bebe infantil",
+      "marca": "Pampers",
+      "estoque": 15,
+      "descricao": "Shampoo Infantil 200ml — categoria bebe infantil, marca Pampers."
+    },
+    {
+      "nome": "Sabonete Líquido Infantil 200ml",
+      "preco": 16.9,
+      "categoria": "bebe infantil",
+      "marca": "Huggies",
+      "estoque": 5,
+      "descricao": "Sabonete Líquido Infantil 200ml — categoria bebe infantil, marca Huggies."
+    },
+    {
+      "nome": "Óleo Corporal Infantil 200ml",
+      "preco": 15.4,
+      "categoria": "bebe infantil",
+      "marca": "Genérico",
+      "estoque": 15,
+      "descricao": "Óleo Corporal Infantil 200ml — categoria bebe infantil, marca Genérico."
+    },
+    {
+      "nome": "Termômetro Digital",
+      "preco": 24.9,
+      "categoria": "primeiros socorros",
+      "marca": "Rioquímica",
+      "estoque": 15,
+      "descricao": "Termômetro Digital — categoria primeiros socorros, marca Rioquímica."
+    },
+    {
+      "nome": "Soro Antisséptico Spray",
+      "preco": 13.9,
+      "categoria": "primeiros socorros",
+      "marca": "Cremer",
+      "estoque": 8,
+      "descricao": "Soro Antisséptico Spray — categoria primeiros socorros, marca Cremer."
+    },
+    {
+      "nome": "Pomada Cicatrizante",
+      "preco": 22.5,
+      "categoria": "primeiros socorros",
+      "marca": "Genérico",
+      "estoque": 50,
+      "descricao": "Pomada Cicatrizante — categoria primeiros socorros, marca Genérico."
+    },
+    {
+      "nome": "Ataduras Elásticas (pacote)",
+      "preco": 9.9,
+      "categoria": "primeiros socorros",
+      "marca": "Rioquímica",
+      "estoque": 12,
+      "descricao": "Ataduras Elásticas (pacote) — categoria primeiros socorros, marca Rioquímica."
+    },
+    {
+      "nome": "Compressa de Gelo Instantânea",
+      "preco": 18.9,
+      "categoria": "primeiros socorros",
+      "marca": "Cremer",
+      "estoque": 50,
+      "descricao": "Compressa de Gelo Instantânea — categoria primeiros socorros, marca Cremer."
+    },
+    {
+      "nome": "Kit Primeiros Socorros Básico",
+      "preco": 69.9,
+      "categoria": "primeiros socorros",
+      "marca": "Genérico",
+      "estoque": 50,
+      "descricao": "Kit Primeiros Socorros Básico — categoria primeiros socorros, marca Genérico."
+    },
+    {
+      "nome": "Escova de Dente Macia",
+      "preco": 8.9,
+      "categoria": "cuidados pessoais",
+      "marca": "Colgate",
+      "estoque": 3,
+      "descricao": "Escova de Dente Macia — categoria cuidados pessoais, marca Colgate."
+    },
+    {
+      "nome": "Creme Dental 90g",
+      "preco": 6.5,
+      "categoria": "cuidados pessoais",
+      "marca": "Oral-B",
+      "estoque": 40,
+      "descricao": "Creme Dental 90g — categoria cuidados pessoais, marca Oral-B."
+    },
+    {
+      "nome": "Fio Dental 50m",
+      "preco": 9.9,
+      "categoria": "cuidados pessoais",
+      "marca": "Nivea",
+      "estoque": 50,
+      "descricao": "Fio Dental 50m — categoria cuidados pessoais, marca Nivea."
+    },
+    {
+      "nome": "Enxaguante Bucal 500ml",
+      "preco": 19.9,
+      "categoria": "cuidados pessoais",
+      "marca": "Dove",
+      "estoque": 5,
+      "descricao": "Enxaguante Bucal 500ml — categoria cuidados pessoais, marca Dove."
+    },
+    {
+      "nome": "Desodorante Roll-on 50ml",
+      "preco": 14.9,
+      "categoria": "cuidados pessoais",
+      "marca": "Colgate",
+      "estoque": 30,
+      "descricao": "Desodorante Roll-on 50ml — categoria cuidados pessoais, marca Colgate."
+    },
+    {
+      "nome": "Sabonete em Barra (unidade)",
+      "preco": 3.9,
+      "categoria": "cuidados pessoais",
+      "marca": "Oral-B",
+      "estoque": 8,
+      "descricao": "Sabonete em Barra (unidade) — categoria cuidados pessoais, marca Oral-B."
+    },
+    {
+      "nome": "Absorvente Higiênico (pacote)",
+      "preco": 11.9,
+      "categoria": "cuidados pessoais",
+      "marca": "Nivea",
+      "estoque": 5,
+      "descricao": "Absorvente Higiênico (pacote) — categoria cuidados pessoais, marca Nivea."
+    },
+    {
+      "nome": "Fralda Geriátrica (pacote)",
+      "preco": 49.9,
+      "categoria": "cuidados pessoais",
+      "marca": "Dove",
+      "estoque": 25,
+      "descricao": "Fralda Geriátrica (pacote) — categoria cuidados pessoais, marca Dove."
+    },
+    {
+      "nome": "Whey Protein 900g",
+      "preco": 129.9,
+      "categoria": "suplemento",
+      "marca": "Growth",
+      "estoque": 20,
+      "descricao": "Whey Protein 900g — categoria suplemento, marca Growth."
+    },
+    {
+      "nome": "Creatina 300g",
+      "preco": 89.9,
+      "categoria": "suplemento",
+      "marca": "Max Titanium",
+      "estoque": 12,
+      "descricao": "Creatina 300g — categoria suplemento, marca Max Titanium."
+    },
+    {
+      "nome": "Colágeno Hidrolisado 300g",
+      "preco": 79.9,
+      "categoria": "suplemento",
+      "marca": "Integralmedica",
+      "estoque": 50,
+      "descricao": "Colágeno Hidrolisado 300g — categoria suplemento, marca Integralmedica."
+    },
+    {
+      "nome": "BCAA (frasco)",
+      "preco": 59.9,
+      "categoria": "suplemento",
+      "marca": "Growth",
+      "estoque": 30,
+      "descricao": "BCAA (frasco) — categoria suplemento, marca Growth."
+    },
+    {
+      "nome": "Melatonina 5mg",
+      "preco": 34.9,
+      "categoria": "suplemento",
+      "marca": "Max Titanium",
+      "estoque": 8,
+      "descricao": "Melatonina 5mg — categoria suplemento, marca Max Titanium."
+    },
+    {
+      "nome": "Medidor de Pressão Digital",
+      "preco": 89.9,
+      "categoria": "aparelhos",
+      "marca": "Omron",
+      "estoque": 6,
+      "descricao": "Medidor de Pressão Digital — categoria aparelhos, marca Omron."
+    },
+    {
+      "nome": "Medidor de Glicose (aparelho)",
+      "preco": 79.9,
+      "categoria": "aparelhos",
+      "marca": "Accu-Chek",
+      "estoque": 5,
+      "descricao": "Medidor de Glicose (aparelho) — categoria aparelhos, marca Accu-Chek."
+    },
+    {
+      "nome": "Tira Teste de Glicose (caixa 50un)",
+      "preco": 54.9,
+      "categoria": "diabetes",
+      "marca": "Accu-Chek",
+      "estoque": 10,
+      "descricao": "Tira Teste de Glicose (caixa 50un) — categoria diabetes, marca Accu-Chek."
+    },
+    {
+      "nome": "Insulina NPH (caneta)",
+      "preco": 45.0,
+      "categoria": "diabetes",
+      "marca": "Genérico",
+      "estoque": 4,
+      "descricao": "Insulina NPH (caneta) — categoria diabetes, marca Genérico."
+    },
+    {
+      "nome": "Shampoo Anticaspa 200ml",
+      "preco": 22.9,
+      "categoria": "capilar",
+      "marca": "Head & Shoulders",
+      "estoque": 15,
+      "descricao": "Shampoo Anticaspa 200ml — categoria capilar, marca Head & Shoulders."
+    },
+    {
+      "nome": "Condicionador Reparador 200ml",
+      "preco": 19.9,
+      "categoria": "capilar",
+      "marca": "Pantene",
+      "estoque": 12,
+      "descricao": "Condicionador Reparador 200ml — categoria capilar, marca Pantene."
+    },
+    {
+      "nome": "Tônico Capilar Antiqueda 100ml",
+      "preco": 39.9,
+      "categoria": "capilar",
+      "marca": "Minoxidil Genérico",
+      "estoque": 8,
+      "descricao": "Tônico Capilar Antiqueda 100ml — categoria capilar, marca Minoxidil Genérico."
+    },
+    {
+      "nome": "Óculos de Leitura +2.00",
+      "preco": 29.9,
+      "categoria": "óptica",
+      "marca": "Genérico",
+      "estoque": 10,
+      "descricao": "Óculos de Leitura +2.00 — categoria óptica, marca Genérico."
+    }
+  ]
+}
