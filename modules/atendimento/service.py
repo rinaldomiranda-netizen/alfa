@@ -33,11 +33,18 @@ class AtendimentoService:
     def finalizar(self, empresa_id: str):
         if not empresa_id:
             raise ValueError("empresa_id é obrigatório")
+
+        # O motor limpa o atendimento durante finalizar(); capturamos o ID
+        # antes da chamada para manter o histórico com a referência real.
+        atendimento_id = self.modulo.status().get("atendimento_id")
         respostas = self.modulo.finalizar()
-        atendimento_id = None
-        # O motor limpa o ID ao finalizar; o histórico mínimo é salvo antes
-        # de perder a referência da sessão.
-        self.store.salvar({"atendimento_id": "finalizado-sem-id", "empresa_id": empresa_id, "respostas": respostas})
+        if atendimento_id:
+            self.store.salvar({
+                "atendimento_id": atendimento_id,
+                "empresa_id": empresa_id,
+                "estado": "FINALIZADO",
+                "respostas": respostas,
+            })
         return respostas
 
     def _salvar(self, empresa_id: str):
