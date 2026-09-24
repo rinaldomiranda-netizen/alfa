@@ -18,6 +18,12 @@ COPY security ./security
 COPY modules ./modules
 COPY atendimento_web ./atendimento_web
 COPY --from=frontend /src/dist ./frontend_dist
+RUN touch /app/core/__init__.py \
+    /app/modules/__init__.py \
+    /app/modules/atendimento/__init__.py \
+    /app/computer/__init__.py \
+    /app/memory/__init__.py \
+    /app/security/__init__.py
 ENV HOST=0.0.0.0
 ENV PORT=8080
 EXPOSE 8080
