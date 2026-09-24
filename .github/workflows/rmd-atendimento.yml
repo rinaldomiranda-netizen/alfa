@@ -1,0 +1,52 @@
+name: RMD Atendimento
+
+on:
+  push:
+    paths:
+      - "core/atendimento.py"
+      - "core/confirmacao.py"
+      - "core/roteiro_pesquisa.py"
+      - "modules/atendimento/**"
+      - "ui/atendimento_app.py"
+      - ".github/workflows/rmd-atendimento.yml"
+  pull_request:
+    paths:
+      - "core/atendimento.py"
+      - "core/confirmacao.py"
+      - "core/roteiro_pesquisa.py"
+      - "modules/atendimento/**"
+      - "ui/atendimento_app.py"
+      - ".github/workflows/rmd-atendimento.yml"
+
+jobs:
+  atendimento:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install runtime dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyautogui pywinauto pillow opencv-python-headless
+
+      - name: Run RMD Atendimento tests
+        shell: pwsh
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m unittest tests.test_modulo_atendimento modules.atendimento.test_service modules.atendimento.test_service_finalizacao -v
+
+      - name: Verify module imports
+        shell: pwsh
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -c "from modules.atendimento import AtendimentoModule; from modules.atendimento.service import AtendimentoService; print('RMD Atendimento imports OK')"
