@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RMD Atendimento</title>
+<style>
+:root{font-family:Inter,Segoe UI,Arial,sans-serif;color:#eef3f8;background:#081018}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#142432,#081018 45%);min-height:100vh}
+.app{max-width:1180px;margin:auto;padding:18px;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px}
+.card{background:rgba(11,22,32,.94);border:1px solid #243645;border-radius:18px;box-shadow:0 18px 50px rgba(0,0,0,.25)}
+header{padding:18px 20px;display:flex;gap:14px;align-items:center;justify-content:space-between}
+h1{margin:0;font-size:22px}.muted{color:#91a4b5;font-size:13px}.pill{padding:7px 10px;border-radius:999px;border:1px solid #2d4658;font-size:12px;color:#a8d6ff}
+#messages{height:calc(100vh - 220px);min-height:420px;overflow:auto;padding:22px}
+.msg{max-width:82%;margin:0 0 14px;padding:12px 14px;border-radius:14px;line-height:1.45;white-space:pre-wrap}
+.beta{background:#112638;border:1px solid #214158}.user{margin-left:auto;background:#1c3426;border:1px solid #315d42}
+.system{margin:0 auto;background:#20262d;border:1px solid #37424c;color:#c0cad2;font-size:13px}
+.status{padding:12px 20px;border-top:1px solid #243645;border-bottom:1px solid #243645;color:#a6b8c6;font-size:12px}
+.composer{padding:14px;border-top:1px solid #243645;display:flex;gap:10px}
+input[type=text]{width:100%;background:#0d1821;color:#fff;border:1px solid #2b4354;border-radius:12px;padding:13px 14px;outline:none}
+button{font:inherit;border:0;border-radius:12px;padding:12px 14px;background:#1b78b8;color:#fff;font-weight:700;cursor:pointer}
+button.secondary{background:#20323f}.actions{display:flex;gap:8px;flex-wrap:wrap;padding:0 14px 14px}.actions button{flex:1;min-width:130px}
+aside{padding:16px}.field{margin-bottom:12px}.field label{display:block;font-size:12px;color:#91a4b5;margin-bottom:6px}
+.history{max-height:420px;overflow:auto;display:grid;gap:8px}.history button{text-align:left;background:#0e1c26;border:1px solid #203744;font-weight:500}
+.empty{color:#8193a2;font-size:13px;padding:10px 0}
+@media(max-width:860px){.app{grid-template-columns:1fr}#messages{height:62vh}.history{max-height:240px}}
+</style>
+</head>
+<body>
+<div class="app">
+<main class="card">
+<header>
+<div><h1>RMD Atendimento</h1><div class="muted">Atendimento conversacional conectado ao protocolo ALFA</div></div>
+<div id="health" class="pill">verificando...</div>
+</header>
+<div class="status" id="status">Nenhum atendimento ativo</div>
+<div id="messages"></div>
+<div class="actions">
+<button id="novo">Novo atendimento</button>
+<button id="finalizar" class="secondary">Finalizar</button>
+<button id="atualizar" class="secondary">Atualizar histórico</button>
+</div>
+<form id="form" class="composer">
+<input id="texto" type="text" autocomplete="off" placeholder="Digite a resposta...">
+<button>Enviar</button>
+</form>
+</main>
+<aside class="card">
+<div class="field"><label for="empresa">Empresa / organização</label><input id="empresa" type="text" value="ALFA-DEMO"></div>
+<div class="field"><div class="muted">Histórico persistido</div></div>
+<div id="historico" class="history"><div class="empty">Nenhum registro carregado.</div></div>
+</aside>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+let sessionId=null;
+const empresa=()=>$('#empresa').value.trim()||'ALFA-DEMO';
+
+function add(text,kind='beta'){
+ if(!text)return;
+ const div=document.createElement('div');
+ div.className='msg '+kind; div.textContent=text;
+ $('#messages').appendChild(div); $('#messages').scrollTop=$('#messages').scrollHeight;
+}
+function setStatus(s){
+ $('#status').textContent=s ? (s.estado+' · '+(s.nome_pessoa||'sem nome')+' · '+(s.atendimento_id||'sem ID')) : 'Nenhum atendimento ativo';
+}
+async function api(path,opts){
+ const r=await fetch(path,{headers:{'Content-Type':'application/json'},...opts});
+ const d=await r.json(); if(!r.ok)throw new Error(d.erro||'Erro'); return d;
+}
+async function novo(){
+ sessionId=null; $('#messages').innerHTML=''; add('Iniciando novo atendimento...','system');
+ const d=await api('/api/atendimentos',{method:'POST',body:JSON.stringify({empresa_id:empresa()})});
+ sessionId=d.session_id; add(d.mensagem); setStatus(d.status);
+ if(d.proxima_pergunta && d.proxima_pergunta!==d.mensagem)add(d.proxima_pergunta,'beta');
+ carregarHistorico();
+}
+async function enviar(e){
+ e.preventDefault(); const texto=$('#texto').value.trim(); if(!texto)return;
+ if(!sessionId)await novo();
+ add(texto,'user'); $('#texto').value='';
+ try{
+  const d=await api('/api/atendimentos/'+sessionId+'/mensagens',{method:'POST',body:JSON.stringify({empresa_id:empresa(),texto:texto})});
+  if(d.mensagem)add(d.mensagem);
+  if(d.proxima_pergunta && d.proxima_pergunta!==d.mensagem)add(d.proxima_pergunta,'beta');
+  setStatus(d.status);
+  if(d.status && d.status.ativo===false){
+   add('Atendimento concluído e salvo no histórico.','system'); sessionId=null; carregarHistorico();
+  }
+ }catch(err){add(err.message,'system');}
+}
+async function finalizar(){
+ if(!sessionId){add('Não há atendimento ativo.','system');return;}
+ const d=await api('/api/atendimentos/'+sessionId+'/finalizar',{method:'POST',body:JSON.stringify({empresa_id:empresa()})});
+ add('Atendimento finalizado e salvo.','system'); setStatus(d.status); sessionId=null; carregarHistorico();
+}
+async function carregarHistorico(){
+ try{
+  const d=await api('/api/historico?empresa_id='+encodeURIComponent(empresa()),{method:'GET'});
+  const box=$('#historico'); box.innerHTML='';
+  if(!d.itens.length){box.innerHTML='<div class="empty">Nenhum registro.</div>';return;}
+  d.itens.forEach(x=>{
+   const b=document.createElement('button');
+   b.textContent=(x.atendimento_id||'sem ID')+' · '+(x.nome_pessoa||'sem nome')+' · '+(x.estado||'');
+   b.onclick=()=>add('Registro '+(x.atendimento_id||'')+'\nNome: '+(x.nome_pessoa||'-')+'\nEstado: '+(x.estado||'-')+'\nDados: '+JSON.stringify(x.respostas||{},null,2),'system');
+   box.appendChild(b);
+  });
+ }catch(err){$('#historico').innerHTML='<div class="empty">Falha ao carregar histórico.</div>';}
+}
+async function health(){
+ try{const d=await api('/api/health',{method:'GET'});$('#health').textContent='online · '+d.versao;}
+ catch{$('#health').textContent='offline';}
+}
+$('#novo').onclick=()=>novo().catch(e=>add(e.message,'system'));
+$('#finalizar').onclick=()=>finalizar().catch(e=>add(e.message,'system'));
+$('#atualizar').onclick=carregarHistorico;
+$('#form').onsubmit=enviar;
+$('#empresa').onchange=()=>{sessionId=null;$('#messages').innerHTML='';setStatus(null);carregarHistorico();};
+health(); carregarHistorico();
+</script>
+</body>
+</html>
