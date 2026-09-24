@@ -1,12 +1,13 @@
 {
-  "name": "pesquisa-eleitoral",
-  "description": "Pesquisa Eleitoral / Pesquisas 2.0 — cadastro, sessões, zonas, escolas, pesquisadores e relatórios.",
-  "version": "2.0.0",
-  "author": "RMD",
-  "permissions": ["module:read", "module:write", "module:admin"],
-  "intents": ["abrir_pesquisa_eleitoral", "gerenciar_base", "gerar_relatorio"],
-  "mode": "alpha-ou-standalone",
-  "dependencies": ["alpha-core", "permission-manager"],
-  "compatibility": {"alpha": true, "standalone": true},
-  "storage": "isolated"
+  "nome": "pesquisa-eleitoral",
+  "descricao": "Pesquisa Eleitoral / Pesquisas 2.0 — cadastro, sessões, zonas, escolas, pesquisadores e relatórios.",
+  "versao": "2.0.0",
+  "autor": "RMD",
+  "permissoes": ["module:read", "module:write", "module:admin"],
+  "ferramentas": [],
+  "intencoes": ["abrir_pesquisa_eleitoral", "gerenciar_base", "gerar_relatorio"],
+  "configuracao": {"modo": "alpha-ou-standalone", "source": "pesquisas2.0"},
+  "dependencias": ["alpha-core", "permission-manager"],
+  "compatibilidade": {"alpha": true, "standalone": true},
+  "offline": false
 }
