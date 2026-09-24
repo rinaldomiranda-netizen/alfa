@@ -26,8 +26,31 @@ class AtendimentoService:
     def responder(self, empresa_id: str, texto: str):
         if not empresa_id:
             raise ValueError("empresa_id é obrigatório")
+
+        # O motor pode finalizar automaticamente durante responder().
+        # Capturamos o ID antes da chamada para nunca perder a referência
+        # real da sessão quando o núcleo limpa o estado.
+        antes = self.modulo.status()
+        atendimento_id = antes.get("atendimento_id")
+
         resultado = self.modulo.responder(texto)
-        self._salvar(empresa_id)
+
+        if isinstance(resultado, dict) and resultado.get("acao") == "finalizado":
+            if atendimento_id:
+                self.store.salvar({
+                    "atendimento_id": atendimento_id,
+                    "empresa_id": empresa_id,
+                    "nome_pessoa": antes.get("nome_pessoa"),
+                    "estado": "FINALIZADO",
+                    "respostas": resultado.get("dados") or {},
+                    "status": {
+                        "acao": "finalizado",
+                        "mensagem": resultado.get("mensagem", ""),
+                    },
+                })
+        else:
+            self._salvar(empresa_id)
+
         return resultado
 
     def finalizar(self, empresa_id: str):
