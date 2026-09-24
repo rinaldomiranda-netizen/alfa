@@ -58,7 +58,13 @@ import enum
 import re
 from datetime import datetime
 
-from computer.form_filler import FalhaDeVerificacao
+try:
+    from computer.form_filler import FalhaDeVerificacao
+except Exception:
+    # O protocolo também roda em servidor Linux (web). A automação
+    # Windows só é necessária quando um FormFiller real é injetado.
+    class FalhaDeVerificacao(Exception):
+        pass
 from core import identidade
 from core.confirmacao import eh_pedido_de_pular, interpretar_resposta, pergunta_de_confirmacao
 from memory import memory
