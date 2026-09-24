@@ -16,6 +16,7 @@ from modules.atendimento.store import AtendimentoStore
 
 BASE = Path(__file__).resolve().parent
 STATIC = BASE / "static"
+FRONTEND_DIST = BASE.parent / "frontend_dist"
 STORE_PATH = Path(os.getenv("ATENDIMENTO_STORE_PATH", str(BASE / "data" / "sessoes.json")))
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8080"))
@@ -121,8 +122,23 @@ class Handler(BaseHTTPRequestHandler):
             registros = STORE.listar(empresa_id)
             self._json({"itens": list(reversed(registros[-100:]))})
             return
-        if url.path == "/" or url.path == "/index.html":
+        if url.path == "/atendimento" or url.path == "/atendimento/":
             self._arquivo(STATIC / "index.html", "text/html; charset=utf-8")
+            return
+        if FRONTEND_DIST.exists() and not url.path.startswith("/api/"):
+            caminho_relativo = url.path.lstrip("/") or "index.html"
+            candidato = (FRONTEND_DIST / caminho_relativo).resolve()
+            try:
+                candidato.relative_to(FRONTEND_DIST.resolve())
+            except ValueError:
+                self._json({"erro": "Caminho inválido"}, 403)
+                return
+            if candidato.is_file():
+                content_type = "text/html; charset=utf-8" if candidato.name == "index.html" else None
+                self._arquivo(candidato, content_type)
+                return
+            # SPA fallback: rotas visuais do React são tratadas no cliente.
+            self._arquivo(FRONTEND_DIST / "index.html", "text/html; charset=utf-8")
             return
         self._json({"erro": "Rota não encontrada"}, 404)
 
@@ -201,7 +217,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     STATIC.mkdir(parents=True, exist_ok=True)
-    print(f"[RMD Atendimento] http://{HOST}:{PORT}")
+    print(f"[RMD ALFA] http://{HOST}:{PORT}")
+    print(f"[RMD ALFA] dashboard: /")
+    print(f"[RMD ALFA] atendimento: /atendimento")
     print(f"[RMD Atendimento] armazenamento: {STORE_PATH}")
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.serve_forever()
