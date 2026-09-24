@@ -1,0 +1,17 @@
+{
+  "nome": "rmd-atendimento",
+  "descricao": "RMD Atendimento V5.1.1 — atendimento, conversas, filas, equipes, SLA, orçamentos, serviços, fluxos, agenda, WhatsApp, relatórios e segurança.",
+  "versao": "5.1.1",
+  "autor": "RMD",
+  "permissoes": ["module:read", "module:write", "module:admin"],
+  "ferramentas": [],
+  "intencoes": ["abrir_atendimento", "listar_conversas", "gerenciar_fila", "criar_orcamento"],
+  "configuracao": {
+    "modo": "alpha-ou-standalone",
+    "entrypoint": "modules.atendimento.AtendimentoModule",
+    "source": "core.atendimento"
+  },
+  "dependencias": ["alpha-core", "permission-manager"],
+  "compatibilidade": {"alpha": true, "standalone": true},
+  "offline": true
+}

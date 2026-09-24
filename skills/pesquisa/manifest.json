@@ -1,0 +1,13 @@
+{
+  "nome": "pesquisa",
+  "descricao": "Central de Pesquisas Online — módulo de pesquisas da RMD.",
+  "versao": "1.0.0",
+  "autor": "RMD",
+  "permissoes": ["module:read", "module:write", "module:admin"],
+  "ferramentas": [],
+  "intencoes": ["abrir_pesquisa", "gerenciar_pesquisadores", "registrar_pesquisa"],
+  "configuracao": {"modo": "alpha-ou-standalone", "source": "central-pesquisas"},
+  "dependencias": ["alpha-core", "permission-manager"],
+  "compatibilidade": {"alpha": true, "standalone": true},
+  "offline": false
+}
