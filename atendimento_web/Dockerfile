@@ -5,6 +5,7 @@ ENV PYTHONPATH=/app
 COPY core ./core
 COPY computer ./computer
 COPY memory ./memory
+COPY security ./security
 COPY modules ./modules
 COPY atendimento_web ./atendimento_web
 ENV HOST=0.0.0.0
