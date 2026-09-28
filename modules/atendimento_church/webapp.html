@@ -201,7 +201,7 @@ lock:'<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0
 gear:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
 menu:'<path d="M4 7h16M4 12h16M4 17h16"/>',send:'<path d="M21 3L10 14"/><path d="M21 3l-7 18-4-7-7-4 18-7z"/>',
 prev:'<path d="M15 5l-7 7 7 7"/>',next:'<path d="M9 5l7 7-7 7"/>',plus:'<path d="M12 5v14M5 12h14"/>',
-check:'<path d="M5 12l5 5 9-10"/>',clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'};
+check:'<path d="M5 12l5 5 9-10"/>',clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',reply:'<path d="M9 14L4 9l5-5"/><path d="M4 9h11a6 6 0 016 6v2"/>',heart:'<path d="M12 21s-7.5-4.6-10-9.1C.3 8.8 1.8 5 5.6 5c2 0 3.6 1.1 4.4 2.6C10.8 6.1 12.4 5 14.4 5c3.8 0 5.3 3.8 3.6 6.9C19.5 16.4 12 21 12 21z"/>'};
 function ic(n,s){s=s||20;return '<svg width="'+s+'" height="'+s+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+IC[n]+'</svg>'}
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
@@ -213,7 +213,7 @@ var DEMO=/[?&]demo=1(&|$)/.test(location.search);
 function apiUrl(caminho){var q=IGREJA_ID?('igreja='+encodeURIComponent(IGREJA_ID)):'';if(!q)return caminho;return caminho+(caminho.indexOf('?')>=0?'&':'?')+q}
 
 /* ---------- dados de demonstração ---------- */
-var NAVG=[['Operação',[['dash','grid','Dashboard'],['atend','chat','Atendimento'],['nomes','users','Nomes'],['filas','layers','Filas e equipes'],['solic','file','Solicitações'],['serv','tag','Serviços'],['fluxos','flow','Fluxos'],['agenda','cal','Agenda']]],
+var NAVG=[['Operação',[['dash','grid','Dashboard'],['atend','chat','Atendimento'],['resp','reply','Respostas rápidas'],['acomp','clock','Acompanhamento de visitantes'],['oracao','heart','Pedidos de oração'],['nomes','users','Nomes'],['filas','layers','Filas e equipes'],['solic','file','Solicitações'],['serv','tag','Serviços'],['fluxos','flow','Fluxos'],['agenda','cal','Agenda']]],
 ['Canais e alertas',[['zap','phone','WhatsApp'],['api','code','API e webhooks'],['alert','bell','Alertas'],['rel','chart','Relatórios']]],
 ['Administração',[['user','users','Usuários e permissões'],['bkp','db','Backup'],['plano','gauge','Plano e limites'],['seg','lock','Segurança'],['cfg','gear','Configurações']]]];
 var TITLE={};NAVG.forEach(function(g){g[1].forEach(function(n){TITLE[n[0]]=n[2]})});
@@ -232,6 +232,7 @@ var incoming=[
 conv.forEach(function(c){c.t=1e12-c.id*1000});
 var QR=['Olá! Como podemos ajudar?','Vou verificar e já retorno.','Encaminhei para a equipe pastoral. Deus abençoe!','Posso agendar um horário para você?'];
 var FILAS=['Secretaria','Pastoral','Diaconia','Ministérios','Infantil'];
+var TIPOS=['','Visitante','Pedido de oração','Aconselhamento pastoral','Pedido de batismo','Transferência de membresia','Decisão por Cristo','Dúvida geral','Outro'];
 var equipe=[{n:'Pr. Marcos Andrade',f:'Pastoral',s:'on',a:2},{n:'Pra. Helena Duarte',f:'Pastoral',s:'aw',a:0},{n:'Cláudia Ferreira',f:'Secretaria',s:'on',a:3},{n:'João Pedro Martins',f:'Diaconia',s:'on',a:1},{n:'Renata Alves',f:'Infantil',s:'off',a:0}];
 var pessoas=[
 {n:'Ana Beatriz Lima',t:'Membro',o:'Louvor',u:'há 2 dias'},{n:'Rafael Souza',t:'Membro',o:'Louvor',u:'há 1 semana'},{n:'Cláudia Ferreira',t:'Membro',o:'Secretaria',u:'hoje'},
@@ -257,10 +258,12 @@ var pm=[[1,1,1,1,1,1,1],[1,1,1,0,1,1,0],[1,1,1,0,0,0,0],[1,1,0,0,0,0,0]];
 var seg=[{n:'Verificação em duas etapas',d:'Pede um código extra ao entrar.',on:1},{n:'Trocar a senha no primeiro acesso',d:'Toda conta nova define a própria senha.',on:1},{n:'Encerrar sessão por inatividade',d:'Sai sozinho após 30 minutos parado.',on:1},{n:'Ocultar pedidos confidenciais de voluntários',d:'Só pastores e equipe autorizada veem.',on:1}];
 var REG={fl:fluxos,sv:serv,al:alertas,sg:seg};
 
-var S={v:'dash',co:store('atd.co')||'Comunidade Vida Nova',theme:store('atd.theme')||'claro',un:0,cid:null,open:false,flt:'Todos',sf:'Todas',per:30,simI:0,bk:'',hor:'Segunda a sexta, 9h às 18h. Domingo, das 8h às 12h.',boas:'Paz do Senhor! Recebemos sua mensagem e já vamos atender você.',lastV:null,bkp:0};
+var S={v:'dash',co:store('atd.co')||'Comunidade Vida Nova',theme:store('atd.theme')||'claro',un:0,cid:null,open:false,flt:'Todos',sf:'Todas',per:30,simI:0,bk:'',hor:'Segunda a sexta, 9h às 18h. Domingo, das 8h às 12h.',boas:'Paz do Senhor! Recebemos sua mensagem e já vamos atender você.',lastV:null,bkp:0,zap:false};
 function avgw(){var e=conv.filter(function(c){return c.st==='espera'});return e.length?Math.round(e.reduce(function(a,c){return a+c.w},0)/e.length)+' min':'0 min'}
 function espera(){return conv.filter(function(c){return c.st==='espera'}).length}
 function byId(id){return conv.filter(function(c){return c.id===id})[0]}
+function diasAte(nasc){if(!nasc||!/^\d{1,2}\/\d{1,2}$/.test(nasc))return null;var partes=nasc.split('/'),d=+partes[0],m=+partes[1];var hoje=new Date();hoje.setHours(0,0,0,0);var ano=hoje.getFullYear();var prox=new Date(ano,m-1,d);if(prox<hoje)prox=new Date(ano+1,m-1,d);return Math.round((prox-hoje)/86400000)}
+function aniversariantes(){return conv.filter(function(c){return c.nasc}).map(function(c){return {n:c.n,nasc:c.nasc,dias:diasAte(c.nasc)}}).filter(function(x){return x.dias!==null&&x.dias<=7}).sort(function(a,b){return a.dias-b.dias})}
 function pill(s){return s==='espera'?'<span class="pill p-wa">Em espera</span>':s==='atend'?'<span class="pill p-in">Em atendimento</span>':'<span class="pill p-mu">Encerrado</span>'}
 function tg(reg,i,o){return '<button class="trkbtn" role="switch" aria-checked="'+(o.on?'true':'false')+'" aria-label="'+esc(o.n)+'" data-tg="'+reg+','+i+'"><span class="trk"></span></button>'}
 
@@ -283,9 +286,11 @@ function vDash(){var e=conv.filter(function(c){return c.st==='espera'}),at=conv.
  '<div class="grid g2"><div class="card"><h3>Atendimentos por hora <span class="pill p-mu">hoje</span></h3>'+bars(hrs,vs,10)+'</div>'+
  '<div class="card"><h3>Fila ao vivo <span class="pill p-wa num">'+e.length+'</span></h3>'+(e.length?e.map(function(c){return '<div class="row"><div class="avatar">'+ini(c.n)+'</div><div class="grow"><div class="t">'+esc(c.n)+'</div><div class="s">'+esc(c.a)+' · '+c.f+' · '+c.w+' min</div></div><button class="btn sm pri" data-atender="'+c.id+'">Atender</button></div>'}).join(''):'<div class="empty">Ninguém esperando agora.</div>')+'</div></div>'+
  '<div class="grid g2e"><div class="card"><h3>Canais</h3>'+[['WhatsApp',54],['Presencial',21],['Telefone',13],['Site',12]].map(function(c){return '<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:13.5px;margin-bottom:5px"><span>'+c[0]+'</span><b class="num">'+c[1]+'%</b></div><div class="bar"><i style="width:'+c[1]+'%"></i></div></div>'}).join('')+'</div>'+
- '<div class="card"><h3>Equipe agora</h3>'+equipe.map(function(p){return '<div class="row"><span class="sdot '+p.s+'"></span><div class="grow"><div class="t">'+esc(p.n)+'</div><div class="s">'+p.f+'</div></div><span class="s num" style="font-size:13px;color:var(--mu)">'+p.a+' atendendo</span></div>'}).join('')+'</div></div>'}
+ '<div class="card"><h3>Equipe agora</h3>'+equipe.map(function(p){return '<div class="row"><span class="sdot '+p.s+'"></span><div class="grow"><div class="t">'+esc(p.n)+'</div><div class="s">'+p.f+'</div></div><span class="s num" style="font-size:13px;color:var(--mu)">'+p.a+' atendendo</span></div>'}).join('')+'</div></div>'+
+ '<div class="grid g2e"><div class="card"><h3>Aniversariantes da semana</h3>'+(function(){var an=aniversariantes();return an.length?an.map(function(a){return '<div class="row"><div class="grow"><div class="t">'+esc(a.n)+'</div><div class="s">'+esc(a.nasc)+(a.dias===0?' · hoje!':' · em '+a.dias+' dia'+(a.dias>1?'s':''))+'</div></div></div>'}).join(''):'<div class="empty">Nenhum aniversário cadastrado para os próximos 7 dias.</div>'})()+'</div>'+
+ '<div class="card"><h3>WhatsApp</h3><div class="row"><div class="grow">Conexão com a API oficial da Meta</div><span class="pill '+(S.zap?'p-ok':'p-mu')+'">'+(S.zap?'Conectado':'Não conectado')+'</span></div><div class="s" style="margin-top:8px;color:var(--mu)">Configure em WhatsApp, no menu.</div></div></div>'}
 function vAtend(){var c=byId(S.cid)||conv[0];if(!S.cid)S.cid=c.id;
- var items=conv.map(function(x){var l=x.m[x.m.length-1];return '<button class="ci" data-conv="'+x.id+'" aria-current="'+(x.id===c.id)+'"><div class="avatar">'+ini(x.n)+'</div><div class="sn"><b>'+esc(x.n)+'</b><span>'+esc(l[1])+'</span><div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">'+pill(x.st)+'<span class="pill p-mu">'+x.c+'</span></div></div></button>'}).join('');
+ var items=conv.map(function(x){var l=x.m[x.m.length-1];return '<button class="ci" data-conv="'+x.id+'" aria-current="'+(x.id===c.id)+'"><div class="avatar">'+ini(x.n)+'</div><div class="sn"><b>'+esc(x.n)+'</b><span>'+esc(l[1])+'</span><div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">'+pill(x.st)+'<span class="pill p-mu">'+x.c+'</span>'+(x.tp?'<span class="pill p-in">'+esc(x.tp)+'</span>':'')+'</div></div></button>'}).join('');
  var ms=c.m.map(function(m){return '<div class="mb '+m[0]+'">'+esc(m[1])+'<small class="num">'+m[2]+'</small></div>'}).join('');
  var p=pessoas.filter(function(x){return x.n===c.n})[0];
  return head('Atendimento','Todas as conversas da igreja em um só lugar.')+
@@ -296,8 +301,13 @@ function vAtend(){var c=byId(S.cid)||conv[0];if(!S.cid)S.cid=c.id;
  '<div class="msgs" id="msgs">'+ms+'</div>'+
  (c.st==='enc'?'<div class="empty" style="padding:16px">Atendimento encerrado.</div>':'<div class="qr">'+QR.map(function(q,i){return '<button class="chip" data-qr="'+i+'">'+esc(q)+'</button>'}).join('')+(DEMO?'<button class="chip" data-simrep="1">Simular resposta da pessoa (teste)</button>':'')+'</div><form class="cmp" id="fm"><label class="sr" style="position:absolute;left:-9999px" for="mi">Mensagem</label><input class="inp" id="mi" placeholder="Escreva sua resposta" autocomplete="off"><button class="btn pri" type="submit" aria-label="Enviar">'+ic('send',18)+'</button></form>')+'</div>'+
  '<div class="fic"><div class="person" style="display:flex;gap:12px;align-items:center"><div class="avatar" style="width:48px;height:48px;flex:0 0 48px">'+ini(c.n)+'</div><div><b>'+esc(c.n)+'</b><div class="s" style="font-size:13px;color:var(--mu)">'+(p?p.t:'Novo contato')+'</div></div></div>'+
- [['Fila',c.f],['Canal',c.c],['Atendente',c.ag||'Ninguém ainda'],['Origem',p?p.o:'—']].map(function(r){return '<div style="display:flex;justify-content:space-between;gap:10px;font-size:14px;border-bottom:1px solid var(--ln);padding-bottom:8px"><span style="color:var(--mu)">'+r[0]+'</span><b style="font-weight:500;text-align:right">'+esc(r[1])+'</b></div>'}).join('')+
- '<button class="btn" data-toast="Solicitação criada a partir do atendimento (demonstração)">'+ic('file',18)+'Criar solicitação</button><button class="btn" data-toast="Horário oferecido pela agenda (demonstração)">'+ic('cal',18)+'Agendar com pastor</button></div></div>'}
+ [['Fila',c.f],['Canal',c.c],['Origem',p?p.o:'—']].map(function(r){return '<div style="display:flex;justify-content:space-between;gap:10px;font-size:14px;border-bottom:1px solid var(--ln);padding-bottom:8px"><span style="color:var(--mu)">'+r[0]+'</span><b style="font-weight:500;text-align:right">'+esc(r[1])+'</b></div>'}).join('')+
+ '<div class="field"><label for="cag">Atribuído a</label><select class="inp" id="cag"><option value="">Ninguém ainda</option>'+equipe.map(function(p2){return '<option'+(c.ag===p2.n?' selected':'')+'>'+esc(p2.n)+'</option>'}).join('')+'</select></div>'+
+ '<div class="field"><label for="ctp">Tipo de atendimento</label><select class="inp" id="ctp">'+TIPOS.map(function(t){return '<option value="'+esc(t)+'"'+(c.tp===t?' selected':'')+'>'+(t||'Não definido')+'</option>'}).join('')+'</select></div>'+
+ '<div class="field"><label for="ctel">Telefone (WhatsApp)</label><input class="inp" id="ctel" value="'+esc(c.tel||'')+'" placeholder="55DDDNÚMERO"></div>'+
+ '<div class="field"><label for="cagd">Dia/horário desejado</label><input class="inp" id="cagd" value="'+esc(c.agd||'')+'" placeholder="Ex.: quinta às 15h"></div>'+
+ '<div class="field"><label for="cnasc">Aniversário (opcional)</label><input class="inp" id="cnasc" value="'+esc(c.nasc||'')+'" placeholder="DD/MM"></div>'+
+ '<button class="btn" data-toast="Solicitação criada a partir do atendimento (demonstração)">'+ic('file',18)+'Criar solicitação</button></div></div>'}
 function vNomes(){var fl=['Todos','Membro','Congregado','Visitante'],r=pessoas.filter(function(p){return S.flt==='Todos'||p.t===S.flt});
  return head('Nomes','Pessoas que já falaram com a igreja: membros, congregados e visitantes.')+
  '<div class="card"><div class="chips" role="group" aria-label="Filtrar" style="margin-bottom:8px">'+fl.map(function(f){return '<button class="chip" data-flt="'+f+'" aria-pressed="'+(S.flt===f)+'">'+f+'</button>'}).join('')+'</div>'+
@@ -312,8 +322,22 @@ function vServ(){return head('Serviços','O que a igreja oferece e quem responde
 function vFluxos(){return head('Fluxos','Ações automáticas para ninguém ficar sem retorno.')+'<div class="grid">'+fluxos.map(function(f,i){return '<div class="card"><h3>'+esc(f.n)+tg('fl',i,f)+'</h3><div style="color:var(--mu);font-size:14px;margin-top:-6px">'+esc(f.q)+'</div><div class="flow">'+f.s.map(function(s,k){return (k?ic('next',16):'')+'<span class="st">'+esc(s)+'</span>'}).join('')+'</div></div>'}).join('')+'</div>'}
 function vAgenda(){return head('Agenda','Horários com pastores e responsáveis.')+'<div class="grid g2"><div class="card"><h3>Esta semana</h3>'+DIAS.map(function(d){var it=agenda.filter(function(a){return a.d===d});return it.length?'<div class="row wrap"><b style="width:44px">'+d+'</b><div class="grow">'+it.map(function(a){return '<div style="padding:3px 0"><span class="num" style="font-weight:600">'+a.h+'</span> · '+esc(a.n)+' <span style="color:var(--mu)">— '+esc(a.t)+' com '+esc(a.p)+'</span></div>'}).join('')+'</div></div>':''}).join('')+'</div>'+
  '<div class="card"><h3>Novo agendamento</h3><form id="fag" style="display:flex;flex-direction:column;gap:12px"><div class="field"><label for="an">Pessoa</label><select class="inp" id="an">'+pessoas.map(function(p){return '<option>'+esc(p.n)+'</option>'}).join('')+'</select></div><div class="field"><label for="at">Assunto</label><select class="inp" id="at">'+serv.filter(function(s){return s.on}).map(function(s){return '<option>'+esc(s.n)+'</option>'}).join('')+'</select></div><div class="field"><label for="ap">Com quem</label><select class="inp" id="ap"><option>Pr. Marcos Andrade</option><option>Pra. Helena Duarte</option></select></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div class="field"><label for="ad">Dia</label><select class="inp" id="ad">'+DIAS.map(function(d){return '<option>'+d+'</option>'}).join('')+'</select></div><div class="field"><label for="ah">Hora</label><input class="inp" id="ah" type="time" value="15:00"></div></div><button class="btn pri" type="submit" style="align-self:flex-start">'+ic('plus',18)+'Agendar</button></form></div></div>'}
-function vZap(){return head('WhatsApp','Conexão oficial pela API da Meta.')+'<div class="grid g2e"><div class="card"><h3>Conexão <span class="pill p-wa">Não conectado</span></h3>'+[['Conta Meta Business',1],['Número da igreja verificado',0],['Webhook configurado',0],['Modelos de mensagem aprovados',0]].map(function(x){return '<div class="row"><div class="grow">'+x[0]+'</div><span class="pill '+(x[1]?'p-ok':'p-mu')+'">'+(x[1]?'Pronto':'Pendente')+'</span></div>'}).join('')+'<div style="margin-top:14px" class="acts"><button class="btn pri" data-toast="Teste disponível após configurar a integração (demonstração)">Testar conexão</button></div></div>'+
- '<div class="card"><h3>Modelos de mensagem</h3>'+tmpl.map(function(t){return '<div class="row"><div class="grow">'+t[0]+'</div><span class="pill '+(t[1]==='Aprovado'?'p-ok':'p-wa')+'">'+t[1]+'</span></div>'}).join('')+'<div class="s" style="font-size:13px;color:var(--mu);margin-top:12px">Enquanto o WhatsApp não estiver conectado, o atendimento funciona por presencial, telefone e site.</div></div></div>'}
+function vZap(){var cfgOk=!!S.zap,hook=location.origin+'/api/whatsapp/webhook'+(IGREJA_ID?('?igreja='+encodeURIComponent(IGREJA_ID)):'');
+ return head('WhatsApp','Conexão oficial pela API da Meta.')+'<div class="grid g2e"><div class="card"><h3>Conexão <span class="pill '+(cfgOk?'p-ok':'p-wa')+'">'+(cfgOk?'Conectado':'Não conectado')+'</span></h3>'+
+ (cfgOk?'<div class="s" style="color:var(--mu)">O envio e o recebimento de mensagens pelo número oficial da igreja estão ativos.</div>':'<div class="s" style="color:var(--mu)">Para ativar, crie uma conta no Meta for Developers com um número do WhatsApp Business verificado e defina WHATSAPP_TOKEN e WHATSAPP_PHONE_NUMBER_ID no arquivo .env do servidor (veja o README do módulo).</div>')+
+ '<div class="field" style="margin-top:14px"><label for="hookurl">Endereço do webhook (cole no painel da Meta)</label><input class="inp" id="hookurl" readonly value="'+esc(hook)+'" onclick="this.select()"></div></div>'+
+ '<div class="card"><h3>Modelos de mensagem</h3>'+tmpl.map(function(t){return '<div class="row"><div class="grow">'+t[0]+'</div><span class="pill '+(t[1]==='Aprovado'?'p-ok':'p-wa')+'">'+t[1]+'</span></div>'}).join('')+'<div class="s" style="font-size:13px;color:var(--mu);margin-top:12px">Enquanto o WhatsApp não estiver conectado, o atendimento continua funcionando por presencial, telefone e site.</div></div></div>'}
+function vResp(){return head('Respostas rápidas','Mensagens prontas para responder mais rápido no atendimento.')+
+ '<div class="card"><h3>Suas respostas</h3>'+(QR.length?QR.map(function(q,i){return '<div class="row wrap"><div class="grow">'+esc(q)+'</div><button class="btn sm" data-qrdel="'+i+'">Remover</button></div>'}).join(''):'<div class="empty">Nenhuma resposta cadastrada ainda.</div>')+
+ '<form id="fqr" style="display:flex;gap:10px;margin-top:14px"><label class="sr" style="position:absolute;left:-9999px" for="qri">Nova resposta</label><input class="inp" id="qri" placeholder="Escreva uma nova resposta pronta"><button class="btn pri" type="submit">'+ic('plus',18)+'Adicionar</button></form></div>'}
+function vAcomp(){var vis=conv.filter(function(x){return x.tp==='Visitante'}).map(function(x){var dias=Math.floor((Date.now()-(x.t||Date.now()))/86400000);return {c:x,dias:dias}});
+ return head('Acompanhamento de visitantes','Ninguém que visitou a igreja deveria ficar sem um retorno.')+
+ '<div class="card">'+(vis.length?vis.map(function(o){var x=o.c,st=x.ctt?'<span class="pill p-ok">Contato feito</span>':(o.dias>=2?'<span class="pill p-er">Atrasado</span>':'<span class="pill p-wa">Aguardando contato</span>');
+  return '<div class="row wrap"><div class="avatar">'+ini(x.n)+'</div><div class="grow"><div class="t">'+esc(x.n)+'</div><div class="s">'+esc(x.a)+' · '+x.c+' · há '+o.dias+' dia'+(o.dias!==1?'s':'')+'</div></div>'+st+'<button class="btn sm'+(x.ctt?'':' pri')+'" data-ctt="'+x.id+'">'+(x.ctt?'Marcar como pendente':'Marcar contato feito')+'</button></div>'}).join(''):'<div class="empty">Nenhum visitante marcado ainda. Marque o tipo "Visitante" na conversa para acompanhar aqui.</div>')+'</div>'}
+function vOracao(){var ps=conv.filter(function(x){return x.tp==='Pedido de oração'});
+ return head('Pedidos de oração','Um lugar só para quem intercede acompanhar os pedidos.')+
+ '<div class="card">'+(ps.length?ps.map(function(x){var ultima=x.m[x.m.length-1],atendido=x.po==='atendido';
+  return '<div class="row wrap"><div class="avatar">'+ini(x.n)+'</div><div class="grow"><div class="t">'+esc(x.n)+'</div><div class="s">'+esc(ultima?ultima[1]:x.a)+'</div></div><span class="pill '+(atendido?'p-ok':'p-in')+'">'+(atendido?'Atendido':'Orando')+'</span><button class="btn sm" data-po="'+x.id+'">'+(atendido?'Voltar para orando':'Marcar como atendido')+'</button></div>'}).join(''):'<div class="empty">Nenhum pedido marcado ainda. Marque o tipo "Pedido de oração" na conversa para ele aparecer aqui.</div>')+'</div>'}
 function vApi(){return head('API e webhooks','Para ligar o atendimento a outros sistemas.')+'<div class="grid g2e"><div class="card"><h3>Chave de acesso</h3><div class="inp num" style="display:flex;align-items:center;background:var(--s2)">••••••••••••••••a9F2</div><div class="acts" style="margin-top:12px"><button class="btn" data-toast="Nova chave gerada (demonstração)">Gerar nova chave</button></div><div style="margin-top:18px" class="s"><b>Endereços disponíveis</b></div>'+['GET /atendimentos','POST /atendimentos','GET /nomes','POST /solicitacoes'].map(function(e){return '<div class="row"><code style="font-size:13.5px">'+e+'</code></div>'}).join('')+'</div>'+
  '<div class="card"><h3>Webhooks</h3>'+[['Novo atendimento','https://exemplo.com.br/hooks/novo'],['Atendimento encerrado','https://exemplo.com.br/hooks/fim']].map(function(w){return '<div class="row"><div class="grow"><div class="t">'+w[0]+'</div><div class="s" style="word-break:break-all">'+w[1]+'</div></div><span class="pill p-ok">Ativo</span></div>'}).join('')+'<div class="acts" style="margin-top:12px"><button class="btn" data-toast="Webhook adicionado (demonstração)">'+ic('plus',18)+'Novo webhook</button></div></div></div>'}
 function vAlert(){return head('Alertas','Avisos para nada ficar esquecido.')+'<div class="grid g2"><div class="card"><h3>Regras</h3>'+alertas.map(function(a,i){return '<div class="row wrap"><div class="grow"><div class="t">'+esc(a.n)+'</div><div class="s">'+esc(a.d)+(a.un?' <b class="num">'+a.u+' '+a.un+'</b>':'')+'</div></div>'+tg('al',i,a)+'</div>'}).join('')+'</div>'+
@@ -335,7 +359,7 @@ function vCfg(){var th=[['claro','Claro','#FFFFFF','#EDF1F7','#0B7A6E'],['escuro
  '<div class="card"><h3>Nome da igreja</h3><div class="field" style="max-width:460px"><label for="coIn">Aparece no cabeçalho de todas as telas</label><input class="inp" id="coIn" maxlength="60" value="'+esc(S.co)+'"></div></div>'+
  '<div class="card"><h3>Tema de exibição</h3><div class="rad" role="radiogroup" aria-label="Tema">'+th.map(function(t){return '<label><input type="radio" name="th" value="'+t[0]+'"'+(S.theme===t[0]?' checked':'')+'><span class="opt"><span class="swt" style="background:'+t[2]+'"><i style="background:'+t[4]+';width:55%"></i><i style="background:'+t[3]+';width:80%"></i><i style="background:'+t[3]+';width:40%"></i></span><b>'+t[1]+'</b></span></label>'}).join('')+'</div></div>'+
  '<div class="card"><h3>Atendimento</h3><div class="grid g2e"><div class="field"><label for="hor">Horário de atendimento</label><textarea class="inp" id="hor">'+esc(S.hor)+'</textarea></div><div class="field"><label for="boas">Mensagem de boas-vindas</label><textarea class="inp" id="boas">'+esc(S.boas)+'</textarea></div></div></div>'}
-var VIEWS={dash:vDash,atend:vAtend,nomes:vNomes,filas:vFilas,solic:vSolic,serv:vServ,fluxos:vFluxos,agenda:vAgenda,zap:vZap,api:vApi,alert:vAlert,rel:vRel,user:vUser,bkp:vBkp,plano:vPlano,seg:vSeg,cfg:vCfg};
+var VIEWS={dash:vDash,atend:vAtend,resp:vResp,acomp:vAcomp,oracao:vOracao,nomes:vNomes,filas:vFilas,solic:vSolic,serv:vServ,fluxos:vFluxos,agenda:vAgenda,zap:vZap,api:vApi,alert:vAlert,rel:vRel,user:vUser,bkp:vBkp,plano:vPlano,seg:vSeg,cfg:vCfg};
 
 /* ---------- render ---------- */
 function renderNav(){document.getElementById('nav').innerHTML=NAVG.map(function(g){return '<div class="grp">'+g[0]+'</div>'+g[1].map(function(n){return '<button data-go="'+n[0]+'"'+(S.v===n[0]?' aria-current="page"':'')+'>'+ic(n[1])+esc(n[2])+(n[0]==='atend'&&espera()?'<span class="bdg num">'+espera()+'</span>':'')+'</button>'}).join('')}).join('');
@@ -350,7 +374,9 @@ function go(v){S.v=v;if(v==='atend')S.open=false;closeMenu();render()}
 function openMenu(){document.getElementById('side').classList.add('open');document.getElementById('scrim').classList.add('on');document.getElementById('menuBtn').setAttribute('aria-expanded','true')}
 function closeMenu(){document.getElementById('side').classList.remove('open');document.getElementById('scrim').classList.remove('on');document.getElementById('menuBtn').setAttribute('aria-expanded','false')}
 function applyTheme(){document.documentElement.setAttribute('data-theme',S.theme)}
-function send(text){var c=byId(S.cid);if(!c||!text.trim())return;c.m.push(['a',text.trim(),hm()]);if(c.st==='espera'){c.st='atend';c.ag='Pr. Marcos Andrade';c.w=0}saveConv(c);render()}
+function send(text){var c=byId(S.cid);if(!c||!text.trim())return;var texto=text.trim();c.m.push(['a',texto,hm()]);if(c.st==='espera'){c.st='atend';c.ag=c.ag||'Pr. Marcos Andrade';c.w=0}
+ if(c.c==='WhatsApp'&&c.tel&&S.zap){jsonFetch(apiUrl('api/whatsapp/enviar'),{method:'POST',body:JSON.stringify({telefone:c.tel,texto:texto})}).then(function(r){if(!r.enviado)toast('Mensagem salva, mas não foi possível enviar pelo WhatsApp agora.')}).catch(function(){toast('Mensagem salva, mas não foi possível enviar pelo WhatsApp agora.')})}
+ saveConv(c);render()}
 function openConv(id){S.cid=id;S.open=true;S.v='atend';render()}
 
 /* ---------- backend do módulo (Python, dentro do ALFA) ---------- */
@@ -358,13 +384,13 @@ var POLL_MS=4000,cfgT=null,seeded=false,pollTimer=null,streamConn=null,tokenProm
 function apiHeaders(){var h={'Content-Type':'application/json'};var tk=store('atd.token');if(tk)h['X-Church-Token']=tk;return h}
 function pedirToken(){if(tokenPrompted)return;tokenPrompted=true;var tk=window.prompt('Este painel pede uma chave de acesso. Cole aqui:');tokenPrompted=false;if(tk){store('atd.token',tk);location.reload()}}
 function jsonFetch(url,opts){opts=opts||{};opts.headers=Object.assign(apiHeaders(),opts.headers||{});return fetch(url,opts).then(function(r){if(r.status===401){pedirToken();throw new Error('sem acesso')}if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})}
-function cvData(c){return {id:c.id,n:c.n,c:c.c,f:c.f,a:c.a,st:c.st,w:c.w,ag:c.ag||'',m:c.m,t:c.t||0}}
+function cvData(c){return {id:c.id,n:c.n,c:c.c,f:c.f,a:c.a,st:c.st,w:c.w,ag:c.ag||'',m:c.m,t:c.t||0,tp:c.tp||'',ctt:!!c.ctt,po:c.po||'',agd:c.agd||'',nasc:c.nasc||'',tel:c.tel||''}}
 function saveConv(c){if(!c.t)c.t=Date.now();jsonFetch(apiUrl('api/conversa'),{method:'POST',body:JSON.stringify(cvData(c))}).catch(function(){toast('Não foi possível salvar agora. Tente de novo.')})}
-function cfgData(){return {sol:sol,agenda:agenda,fl:fluxos.map(function(o){return o.on}),sv:serv.map(function(o){return o.on}),al:alertas.map(function(a){return {on:a.on,u:a.u}}),sg:seg.map(function(o){return o.on}),pm:pm,co:S.co,hor:S.hor,boas:S.boas}}
+function cfgData(){return {sol:sol,agenda:agenda,fl:fluxos.map(function(o){return o.on}),sv:serv.map(function(o){return o.on}),al:alertas.map(function(a){return {on:a.on,u:a.u}}),sg:seg.map(function(o){return o.on}),pm:pm,co:S.co,hor:S.hor,boas:S.boas,qr:QR}}
 function saveCfg(){clearTimeout(cfgT);cfgT=setTimeout(function(){jsonFetch(apiUrl('api/cfg'),{method:'POST',body:JSON.stringify(cfgData())}).catch(function(){toast('Não foi possível salvar agora. Tente de novo.')})},450)}
 function clone(x){return JSON.parse(JSON.stringify(x))}
 function fmtData(iso){try{return new Date(iso).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}catch(e){return iso}}
-function applyCfg(d){if(!d)return;if(d.sol)sol=clone(d.sol);if(d.agenda)agenda=clone(d.agenda);if(d.pm)pm=clone(d.pm);
+function applyCfg(d){if(!d)return;if(d.sol)sol=clone(d.sol);if(d.agenda)agenda=clone(d.agenda);if(d.pm)pm=clone(d.pm);if(d.qr)QR=clone(d.qr);
  (d.fl||[]).forEach(function(v,i){if(fluxos[i])fluxos[i].on=v});(d.sv||[]).forEach(function(v,i){if(serv[i])serv[i].on=v});(d.sg||[]).forEach(function(v,i){if(seg[i])seg[i].on=v});
  (d.al||[]).forEach(function(a,i){if(alertas[i]){alertas[i].on=a.on;alertas[i].u=a.u}});
  var ae=document.activeElement,fid=ae&&ae.id;
@@ -373,6 +399,7 @@ function applyCfg(d){if(!d)return;if(d.sol)sol=clone(d.sol);if(d.agenda)agenda=c
 function setSync(ok){document.getElementById('slbl').textContent=ok?'Salvo online':'Modo demonstração';var d=document.getElementById('sdot');d.style.background=ok?'':'var(--wa)';d.style.animation=ok?'':'none'}
 function aplicarEstado(d){
  setSync(!!d.online);
+ S.zap=!!d.zap;
  if(Array.isArray(d.conversas)&&d.conversas.length){conv=d.conversas.map(clone).sort(function(a,b){return (b.t||0)-(a.t||0)});if(!byId(S.cid))S.cid=null}
  else if(d.online&&!seeded){seeded=true;conv.forEach(saveConv)}
  applyCfg(d.cfg);renderCo();render()
@@ -399,7 +426,7 @@ document.getElementById('menuBtn').addEventListener('click',openMenu);
 document.getElementById('scrim').addEventListener('click',closeMenu);
 document.getElementById('bell').addEventListener('click',function(){go('atend')});
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeMenu()});
-document.addEventListener('click',function(e){var t=e.target.closest('[data-go],[data-tg],[data-pm],[data-conv],[data-back],[data-act],[data-qr],[data-flt],[data-sf],[data-per],[data-adv],[data-open],[data-atender],[data-bkp],[data-toast],[data-simnew],[data-simrep]');if(!t)return;
+document.addEventListener('click',function(e){var t=e.target.closest('[data-go],[data-tg],[data-pm],[data-conv],[data-back],[data-act],[data-qr],[data-flt],[data-sf],[data-per],[data-adv],[data-open],[data-atender],[data-bkp],[data-toast],[data-simnew],[data-simrep],[data-ctt],[data-po],[data-qrdel]');if(!t)return;
  var d=t.dataset;
  if(d.simnew!==undefined){var ni=incoming[S.simI++%incoming.length],nc={id:Date.now(),n:ni.n,c:ni.c,f:ni.f,a:ni.a,st:'espera',w:1,ag:'',t:Date.now(),m:[['p',ni.m,hm()]]};conv.unshift(nc);saveConv(nc);toast('Nova mensagem de '+ni.n);return render()}
  if(d.simrep!==undefined){var cc=byId(S.cid);if(cc){cc.m.push(['p','Obrigado(a)! Fico no aguardo.',hm()]);saveConv(cc);render()}return}
@@ -423,13 +450,22 @@ document.addEventListener('click',function(e){var t=e.target.closest('[data-go],
    var link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=nome;document.body.appendChild(link);link.click();link.remove();
    S.bk='Agora ('+hm()+')';toast('Backup baixado com sucesso')
   }).catch(function(){toast('Não foi possível gerar o backup agora (verifique se está conectado à nuvem).')}).finally(function(){S.bkpEmAndamento=false;if(S.v==='bkp')render()})}
+ if(d.ctt){var cc=byId(+d.ctt);if(cc){cc.ctt=!cc.ctt;saveConv(cc);toast(cc.ctt?'Contato marcado como feito':'Contato marcado como pendente')}return render()}
+ if(d.po){var cc2=byId(+d.po);if(cc2){cc2.po=cc2.po==='atendido'?'orando':'atendido';saveConv(cc2);toast(cc2.po==='atendido'?'Pedido marcado como atendido':'Pedido voltou para orando')}return render()}
+ if(d.qrdel!==undefined){QR.splice(+d.qrdel,1);saveCfg();return render()}
 });
 document.addEventListener('submit',function(e){e.preventDefault();
  if(e.target.id==='fm'){var i=document.getElementById('mi');send(i.value)}
- if(e.target.id==='fag'){var g=function(id){return document.getElementById(id).value};agenda.push({d:g('ad'),h:g('ah').replace(':00','h').replace(':','h'),n:g('an'),t:g('at'),p:g('ap')});toast('Agendado com '+g('ap'));saveCfg();render()}});
+ if(e.target.id==='fag'){var g=function(id){return document.getElementById(id).value};agenda.push({d:g('ad'),h:g('ah').replace(':00','h').replace(':','h'),n:g('an'),t:g('at'),p:g('ap')});toast('Agendado com '+g('ap'));saveCfg();render()}
+ if(e.target.id==='fqr'){var qi=document.getElementById('qri'),val=qi.value.trim();if(val){QR.push(val);saveCfg();toast('Resposta adicionada')}return render()}});
 document.addEventListener('change',function(e){
  if(e.target.name==='th'){S.theme=e.target.value;store('atd.theme',S.theme);applyTheme();toast('Tema aplicado')}
- if(e.target.id==='trf'){var c=byId(S.cid);c.f=e.target.value;toast('Transferido para a fila '+c.f);saveConv(c);render()}});
+ if(e.target.id==='trf'){var c=byId(S.cid);c.f=e.target.value;toast('Transferido para a fila '+c.f);saveConv(c);render()}
+ if(e.target.id==='cag'){var c2=byId(S.cid);c2.ag=e.target.value;toast(c2.ag?('Atribuído a '+c2.ag):'Sem atendente responsável');saveConv(c2);render()}
+ if(e.target.id==='ctp'){var c3=byId(S.cid);c3.tp=e.target.value;saveConv(c3);render()}
+ if(e.target.id==='ctel'){var c4=byId(S.cid);c4.tel=e.target.value.trim();saveConv(c4)}
+ if(e.target.id==='cagd'){var c5=byId(S.cid);c5.agd=e.target.value;saveConv(c5)}
+ if(e.target.id==='cnasc'){var c6=byId(S.cid);c6.nasc=e.target.value.trim();saveConv(c6)}});
 document.addEventListener('input',function(e){
  if(e.target.id==='coIn'){S.co=e.target.value.trim()||'Nome da igreja';store('atd.co',S.co);saveCfg();renderCo()}
  if(e.target.id==='hor'){S.hor=e.target.value;saveCfg()}if(e.target.id==='boas'){S.boas=e.target.value;saveCfg()}});
