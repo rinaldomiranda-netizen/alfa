@@ -208,6 +208,9 @@ function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localSto
 function ini(n){var p=n.split(' ');return (p[0][0]+(p[1]?p[1][0]:'')).toUpperCase()}
 function hm(){return new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}
 function toast(m){var t=document.getElementById('toast');t.textContent=m;t.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(function(){t.classList.remove('on')},2800)}
+var IGREJA_ID=(typeof window!=='undefined'&&window.IGREJA_ID)||'';
+var DEMO=/[?&]demo=1(&|$)/.test(location.search);
+function apiUrl(caminho){var q=IGREJA_ID?('igreja='+encodeURIComponent(IGREJA_ID)):'';if(!q)return caminho;return caminho+(caminho.indexOf('?')>=0?'&':'?')+q}
 
 /* ---------- dados de demonstração ---------- */
 var NAVG=[['Operação',[['dash','grid','Dashboard'],['atend','chat','Atendimento'],['nomes','users','Nomes'],['filas','layers','Filas e equipes'],['solic','file','Solicitações'],['serv','tag','Serviços'],['fluxos','flow','Fluxos'],['agenda','cal','Agenda']]],
@@ -254,7 +257,7 @@ var pm=[[1,1,1,1,1,1,1],[1,1,1,0,1,1,0],[1,1,1,0,0,0,0],[1,1,0,0,0,0,0]];
 var seg=[{n:'Verificação em duas etapas',d:'Pede um código extra ao entrar.',on:1},{n:'Trocar a senha no primeiro acesso',d:'Toda conta nova define a própria senha.',on:1},{n:'Encerrar sessão por inatividade',d:'Sai sozinho após 30 minutos parado.',on:1},{n:'Ocultar pedidos confidenciais de voluntários',d:'Só pastores e equipe autorizada veem.',on:1}];
 var REG={fl:fluxos,sv:serv,al:alertas,sg:seg};
 
-var S={v:'dash',co:store('atd.co')||'Comunidade Vida Nova',theme:store('atd.theme')||'claro',un:0,cid:null,open:false,flt:'Todos',sf:'Todas',per:30,simI:0,bk:'Hoje, 03:00',hor:'Segunda a sexta, 9h às 18h. Domingo, das 8h às 12h.',boas:'Paz do Senhor! Recebemos sua mensagem e já vamos atender você.',lastV:null,bkp:0};
+var S={v:'dash',co:store('atd.co')||'Comunidade Vida Nova',theme:store('atd.theme')||'claro',un:0,cid:null,open:false,flt:'Todos',sf:'Todas',per:30,simI:0,bk:'',hor:'Segunda a sexta, 9h às 18h. Domingo, das 8h às 12h.',boas:'Paz do Senhor! Recebemos sua mensagem e já vamos atender você.',lastV:null,bkp:0};
 function avgw(){var e=conv.filter(function(c){return c.st==='espera'});return e.length?Math.round(e.reduce(function(a,c){return a+c.w},0)/e.length)+' min':'0 min'}
 function espera(){return conv.filter(function(c){return c.st==='espera'}).length}
 function byId(id){return conv.filter(function(c){return c.id===id})[0]}
@@ -275,7 +278,7 @@ function head(t,p,a){return '<div class="pagehead"><div><h1>'+t+'</h1>'+(p?'<p>'
 /* ---------- telas ---------- */
 function vDash(){var e=conv.filter(function(c){return c.st==='espera'}),at=conv.filter(function(c){return c.st==='atend'}).length;
  var hrs=['8','9','10','11','12','13','14','15','16','17','18','19','20'],vs=[2,5,9,14,11,6,4,3,7,12,18,10,6];
- return head('Dashboard','Visão do atendimento da igreja em tempo real.','<div class="acts"><button class="btn" data-simnew="1">Simular nova mensagem (teste)</button><button class="btn pri" data-go="atend">'+ic('chat',18)+'Abrir atendimento</button></div>')+
+ return head('Dashboard','Visão do atendimento da igreja em tempo real.','<div class="acts">'+(DEMO?'<button class="btn" data-simnew="1">Simular nova mensagem (teste)</button>':'')+'<button class="btn pri" data-go="atend">'+ic('chat',18)+'Abrir atendimento</button></div>')+
  '<div class="grid g4">'+stat('clock','Em espera',espera(),'aguardando resposta')+stat('chat','Em atendimento',at,'com a equipe agora')+stat('check','Conversas registradas',conv.length,'todos os canais')+stat('gauge','Tempo médio de espera',avgw(),'meta: até 5 min')+'</div>'+
  '<div class="grid g2"><div class="card"><h3>Atendimentos por hora <span class="pill p-mu">hoje</span></h3>'+bars(hrs,vs,10)+'</div>'+
  '<div class="card"><h3>Fila ao vivo <span class="pill p-wa num">'+e.length+'</span></h3>'+(e.length?e.map(function(c){return '<div class="row"><div class="avatar">'+ini(c.n)+'</div><div class="grow"><div class="t">'+esc(c.n)+'</div><div class="s">'+esc(c.a)+' · '+c.f+' · '+c.w+' min</div></div><button class="btn sm pri" data-atender="'+c.id+'">Atender</button></div>'}).join(''):'<div class="empty">Ninguém esperando agora.</div>')+'</div></div>'+
@@ -291,7 +294,7 @@ function vAtend(){var c=byId(S.cid)||conv[0];if(!S.cid)S.cid=c.id;
  '<label class="sr" style="position:absolute;left:-9999px" for="trf">Transferir para fila</label><select class="inp" id="trf" style="width:auto;min-height:38px;padding:5px 10px">'+FILAS.map(function(f){return '<option'+(f===c.f?' selected':'')+'>'+f+'</option>'}).join('')+'</select>'+
  (c.st==='espera'?'<button class="btn sm pri" data-act="assumir">Assumir</button>':c.st==='atend'?'<button class="btn sm" data-act="enc">Encerrar</button>':'<button class="btn sm" data-act="reab">Reabrir</button>')+'</div>'+
  '<div class="msgs" id="msgs">'+ms+'</div>'+
- (c.st==='enc'?'<div class="empty" style="padding:16px">Atendimento encerrado.</div>':'<div class="qr">'+QR.map(function(q,i){return '<button class="chip" data-qr="'+i+'">'+esc(q)+'</button>'}).join('')+'<button class="chip" data-simrep="1">Simular resposta da pessoa (teste)</button></div><form class="cmp" id="fm"><label class="sr" style="position:absolute;left:-9999px" for="mi">Mensagem</label><input class="inp" id="mi" placeholder="Escreva sua resposta" autocomplete="off"><button class="btn pri" type="submit" aria-label="Enviar">'+ic('send',18)+'</button></form>')+'</div>'+
+ (c.st==='enc'?'<div class="empty" style="padding:16px">Atendimento encerrado.</div>':'<div class="qr">'+QR.map(function(q,i){return '<button class="chip" data-qr="'+i+'">'+esc(q)+'</button>'}).join('')+(DEMO?'<button class="chip" data-simrep="1">Simular resposta da pessoa (teste)</button>':'')+'</div><form class="cmp" id="fm"><label class="sr" style="position:absolute;left:-9999px" for="mi">Mensagem</label><input class="inp" id="mi" placeholder="Escreva sua resposta" autocomplete="off"><button class="btn pri" type="submit" aria-label="Enviar">'+ic('send',18)+'</button></form>')+'</div>'+
  '<div class="fic"><div class="person" style="display:flex;gap:12px;align-items:center"><div class="avatar" style="width:48px;height:48px;flex:0 0 48px">'+ini(c.n)+'</div><div><b>'+esc(c.n)+'</b><div class="s" style="font-size:13px;color:var(--mu)">'+(p?p.t:'Novo contato')+'</div></div></div>'+
  [['Fila',c.f],['Canal',c.c],['Atendente',c.ag||'Ninguém ainda'],['Origem',p?p.o:'—']].map(function(r){return '<div style="display:flex;justify-content:space-between;gap:10px;font-size:14px;border-bottom:1px solid var(--ln);padding-bottom:8px"><span style="color:var(--mu)">'+r[0]+'</span><b style="font-weight:500;text-align:right">'+esc(r[1])+'</b></div>'}).join('')+
  '<button class="btn" data-toast="Solicitação criada a partir do atendimento (demonstração)">'+ic('file',18)+'Criar solicitação</button><button class="btn" data-toast="Horário oferecido pela agenda (demonstração)">'+ic('cal',18)+'Agendar com pastor</button></div></div>'}
@@ -322,8 +325,8 @@ function vRel(){var k=S.per/30,as=[['Pedidos de oração',62],['Visitantes e cé
  '<div class="grid g2e"><div class="card"><h3>Atendimentos ao longo do período</h3>'+line(serie)+'</div><div class="card"><h3>Assuntos mais procurados</h3>'+as.map(function(a){var v=Math.round(a[1]*k);return '<div style="margin-bottom:11px"><div style="display:flex;justify-content:space-between;font-size:13.5px;margin-bottom:5px"><span>'+a[0]+'</span><b class="num">'+v+'</b></div><div class="bar"><i style="width:'+(a[1]/62*100)+'%"></i></div></div>'}).join('')+'</div></div>'}
 function vUser(){return head('Usuários e permissões','Quem entra e o que cada função pode fazer.')+'<div class="grid g2"><div class="card"><h3>Usuários <button class="btn sm" data-toast="Convite enviado (demonstração)">'+ic('plus',16)+'Convidar</button></h3>'+users.map(function(u){return '<div class="row"><span class="sdot '+u.s+'"></span><div class="grow"><div class="t">'+esc(u.n)+'</div></div><span class="pill p-mu">'+u.r+'</span></div>'}).join('')+'</div>'+
  '<div class="card"><h3>Permissões por função</h3><div class="scroll"><table class="tbl"><thead><tr><th>Permissão</th>'+ROLES.map(function(r){return '<th class="c">'+r+'</th>'}).join('')+'</tr></thead><tbody>'+PERM.map(function(p,j){return '<tr><td>'+p+'</td>'+ROLES.map(function(r,i){return '<td class="c"><button class="trkbtn" role="switch" aria-checked="'+(pm[i][j]?'true':'false')+'" aria-label="'+p+' para '+r+'" data-pm="'+i+','+j+'"><span class="trk"></span></button></td>'}).join('')+'</tr>'}).join('')+'</tbody></table></div></div></div>'}
-function vBkp(){return head('Backup','Cópias de segurança dos atendimentos e cadastros.')+'<div class="grid g2e"><div class="card"><h3>Situação</h3><div class="row"><div class="grow"><div class="t">Último backup</div><div class="s" id="bkl">'+S.bk+'</div></div><span class="pill p-ok">Concluído</span></div><div class="row"><div class="grow"><div class="t">Rotina automática</div><div class="s">Todos os dias às 03:00</div></div></div><div style="margin-top:14px"><button class="btn pri" id="bkb" data-bkp="1">'+(S.bkp?'Fazendo backup...':'Fazer backup agora')+'</button></div><div class="bar" style="margin-top:14px;'+(S.bkp?'':'display:none')+'"><i id="bkbar" style="width:'+S.bkp+'%"></i></div></div>'+
- '<div class="card"><h3>Histórico</h3>'+[['Hoje, 03:00','12,4 MB'],['Ontem, 03:00','12,3 MB'],['Anteontem, 03:00','12,1 MB']].map(function(b){return '<div class="row"><div class="grow">'+b[0]+'</div><span class="s num" style="color:var(--mu)">'+b[1]+'</span><button class="btn sm" data-toast="Restauração pede confirmação do administrador (demonstração)">Restaurar</button></div>'}).join('')+'</div></div>'}
+function vBkp(){return head('Backup','Baixe uma cópia de segurança de todas as conversas e configurações desta igreja.')+'<div class="grid g2e"><div class="card"><h3>Situação</h3><div class="row"><div class="grow"><div class="t">Último backup baixado</div><div class="s" id="bkl">'+(S.bk||'Nunca')+'</div></div></div><div style="margin-top:14px"><button class="btn pri" id="bkb" data-bkp="1">Baixar backup agora</button></div><div class="s" style="margin-top:10px;color:var(--mu)">Gera um arquivo .json com todas as conversas e configurações desta igreja, para guardar onde você preferir.</div></div>'+
+ '<div class="card"><h3>Como funciona</h3><div class="s" style="color:var(--mu)">O backup só está disponível quando o painel está conectado à nuvem (modo online, veja o indicador no topo). Cada clique baixa um arquivo novo com os dados de agora — guarde os arquivos que quiser manter.</div></div></div>'}
 function vPlano(){var u=[['Usuários',5,10],['Atendimentos no mês',209,1000],['Unidades',3,5],['Armazenamento (GB)',1.2,10]];return head('Plano e limites','Uso do sistema neste mês.')+'<div class="card" style="max-width:720px"><h3>Plano atual <span class="pill p-in">Demonstração</span></h3>'+u.map(function(x){var p=Math.round(x[1]/x[2]*100);return '<div style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:6px"><span>'+x[0]+'</span><b class="num">'+x[1]+' de '+x[2]+'</b></div><div class="bar"><i style="width:'+p+'%"></i></div></div>'}).join('')+'</div>'}
 function vSeg(){return head('Segurança','Proteção dos dados das pessoas.')+'<div class="grid g2"><div class="card"><h3>Regras</h3>'+seg.map(function(s,i){return '<div class="row wrap"><div class="grow"><div class="t">'+esc(s.n)+'</div><div class="s">'+esc(s.d)+'</div></div>'+tg('sg',i,s)+'</div>'}).join('')+'</div>'+
  '<div class="card"><h3>Acessos recentes</h3>'+[['Pr. Marcos Andrade','Hoje, 19:02','Computador'],['Cláudia Ferreira','Hoje, 18:47','Celular'],['João Pedro Martins','Ontem, 21:10','Celular']].map(function(a){return '<div class="row"><div class="grow"><div class="t">'+a[0]+'</div><div class="s">'+a[1]+' · '+a[2]+'</div></div></div>'}).join('')+'</div></div>'}
@@ -351,26 +354,42 @@ function send(text){var c=byId(S.cid);if(!c||!text.trim())return;c.m.push(['a',t
 function openConv(id){S.cid=id;S.open=true;S.v='atend';render()}
 
 /* ---------- backend do módulo (Python, dentro do ALFA) ---------- */
-var POLL_MS=4000,cfgT=null,seeded=false;
-function jsonFetch(url,opts){opts=opts||{};opts.headers=Object.assign({'Content-Type':'application/json'},opts.headers||{});return fetch(url,opts).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})}
+var POLL_MS=4000,cfgT=null,seeded=false,pollTimer=null,streamConn=null,tokenPrompted=false;
+function apiHeaders(){var h={'Content-Type':'application/json'};var tk=store('atd.token');if(tk)h['X-Church-Token']=tk;return h}
+function pedirToken(){if(tokenPrompted)return;tokenPrompted=true;var tk=window.prompt('Este painel pede uma chave de acesso. Cole aqui:');tokenPrompted=false;if(tk){store('atd.token',tk);location.reload()}}
+function jsonFetch(url,opts){opts=opts||{};opts.headers=Object.assign(apiHeaders(),opts.headers||{});return fetch(url,opts).then(function(r){if(r.status===401){pedirToken();throw new Error('sem acesso')}if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})}
 function cvData(c){return {id:c.id,n:c.n,c:c.c,f:c.f,a:c.a,st:c.st,w:c.w,ag:c.ag||'',m:c.m,t:c.t||0}}
-function saveConv(c){if(!c.t)c.t=Date.now();jsonFetch('api/conversa',{method:'POST',body:JSON.stringify(cvData(c))}).catch(function(){toast('Não foi possível salvar agora. Tente de novo.')})}
+function saveConv(c){if(!c.t)c.t=Date.now();jsonFetch(apiUrl('api/conversa'),{method:'POST',body:JSON.stringify(cvData(c))}).catch(function(){toast('Não foi possível salvar agora. Tente de novo.')})}
 function cfgData(){return {sol:sol,agenda:agenda,fl:fluxos.map(function(o){return o.on}),sv:serv.map(function(o){return o.on}),al:alertas.map(function(a){return {on:a.on,u:a.u}}),sg:seg.map(function(o){return o.on}),pm:pm,co:S.co,hor:S.hor,boas:S.boas}}
-function saveCfg(){clearTimeout(cfgT);cfgT=setTimeout(function(){jsonFetch('api/cfg',{method:'POST',body:JSON.stringify(cfgData())}).catch(function(){toast('Não foi possível salvar agora. Tente de novo.')})},450)}
+function saveCfg(){clearTimeout(cfgT);cfgT=setTimeout(function(){jsonFetch(apiUrl('api/cfg'),{method:'POST',body:JSON.stringify(cfgData())}).catch(function(){toast('Não foi possível salvar agora. Tente de novo.')})},450)}
 function clone(x){return JSON.parse(JSON.stringify(x))}
+function fmtData(iso){try{return new Date(iso).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}catch(e){return iso}}
 function applyCfg(d){if(!d)return;if(d.sol)sol=clone(d.sol);if(d.agenda)agenda=clone(d.agenda);if(d.pm)pm=clone(d.pm);
  (d.fl||[]).forEach(function(v,i){if(fluxos[i])fluxos[i].on=v});(d.sv||[]).forEach(function(v,i){if(serv[i])serv[i].on=v});(d.sg||[]).forEach(function(v,i){if(seg[i])seg[i].on=v});
  (d.al||[]).forEach(function(a,i){if(alertas[i]){alertas[i].on=a.on;alertas[i].u=a.u}});
  var ae=document.activeElement,fid=ae&&ae.id;
- if(d.co&&fid!=='coIn'){S.co=d.co;store('atd.co',S.co)}if(d.hor&&fid!=='hor')S.hor=d.hor;if(d.boas&&fid!=='boas')S.boas=d.boas}
+ if(d.co&&fid!=='coIn'){S.co=d.co;store('atd.co',S.co)}if(d.hor&&fid!=='hor')S.hor=d.hor;if(d.boas&&fid!=='boas')S.boas=d.boas;
+ if(d.ultimo_backup)S.bk=fmtData(d.ultimo_backup)}
 function setSync(ok){document.getElementById('slbl').textContent=ok?'Salvo online':'Modo demonstração';var d=document.getElementById('sdot');d.style.background=ok?'':'var(--wa)';d.style.animation=ok?'':'none'}
-function pollState(){jsonFetch('api/state').then(function(d){
-  setSync(!!d.online);
-  if(Array.isArray(d.conversas)&&d.conversas.length){conv=d.conversas.map(clone).sort(function(a,b){return (b.t||0)-(a.t||0)});if(!byId(S.cid))S.cid=null}
-  else if(d.online&&!seeded){seeded=true;conv.forEach(saveConv)}
-  applyCfg(d.cfg);renderCo();render()
- }).catch(function(){setSync(false)})}
-function initDb(){pollState();setInterval(pollState,POLL_MS)}
+function aplicarEstado(d){
+ setSync(!!d.online);
+ if(Array.isArray(d.conversas)&&d.conversas.length){conv=d.conversas.map(clone).sort(function(a,b){return (b.t||0)-(a.t||0)});if(!byId(S.cid))S.cid=null}
+ else if(d.online&&!seeded){seeded=true;conv.forEach(saveConv)}
+ applyCfg(d.cfg);renderCo();render()
+}
+function pollStateOnce(){return jsonFetch(apiUrl('api/state')).then(aplicarEstado).catch(function(){setSync(false)})}
+function initPolling(){if(pollTimer)return;pollStateOnce();pollTimer=setInterval(pollStateOnce,POLL_MS)}
+function stopPolling(){if(pollTimer){clearInterval(pollTimer);pollTimer=null}}
+function initStream(){
+ if(!('EventSource' in window)){return initPolling()}
+ try{
+  streamConn=new EventSource(apiUrl('api/stream'));
+  streamConn.onmessage=function(ev){try{aplicarEstado(JSON.parse(ev.data))}catch(e){}};
+  streamConn.onerror=function(){if(streamConn){streamConn.close();streamConn=null}setSync(false);if(!pollTimer)initPolling()};
+  streamConn.onopen=function(){stopPolling()};
+ }catch(e){initPolling()}
+}
+function initDb(){initStream();setTimeout(function(){if(!streamConn)initPolling()},2500)}
 
 /* ---------- eventos ---------- */
 document.getElementById('menuBtn').innerHTML=ic('menu');
@@ -398,7 +417,13 @@ document.addEventListener('click',function(e){var t=e.target.closest('[data-go],
  if(d.per){S.per=+d.per;return render()}
  if(d.adv){var s=sol[+d.adv];if(s.st<2){s.st++;if(s.st===2)s.pz='concluída'}toast(s.st===2?'Solicitação concluída':'Solicitação iniciada');saveCfg();return render()}
  if(d.open){var pn=d.open,ex=conv.filter(function(c){return c.n===pn})[0];if(!ex){ex={id:Date.now(),n:pn,c:'Presencial',f:'Secretaria',a:'Novo atendimento',st:'atend',w:0,ag:'Pr. Marcos Andrade',m:[['a',S.boas,hm()]]};ex.t=Date.now();conv.unshift(ex);saveConv(ex);toast('Atendimento criado para '+pn)}return openConv(ex.id)}
- if(d.bkp){if(S.bkp)return;S.bkp=1;render();var iv=setInterval(function(){S.bkp+=18;var bar=document.getElementById('bkbar');if(S.bkp>=100){clearInterval(iv);S.bkp=0;S.bk='Agora ('+hm()+')';toast('Backup concluído');if(S.v==='bkp')render()}else if(bar)bar.style.width=S.bkp+'%'},400)}});
+ if(d.bkp){if(S.bkpEmAndamento)return;S.bkpEmAndamento=true;var btnBk=document.getElementById('bkb');if(btnBk)btnBk.textContent='Gerando backup...';
+  fetch(apiUrl('api/backup'),{headers:apiHeaders()}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.blob()}).then(function(blob){
+   var nome='backup-'+(S.co||'igreja').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'')+'-'+new Date().toISOString().slice(0,10)+'.json';
+   var link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=nome;document.body.appendChild(link);link.click();link.remove();
+   S.bk='Agora ('+hm()+')';toast('Backup baixado com sucesso')
+  }).catch(function(){toast('Não foi possível gerar o backup agora (verifique se está conectado à nuvem).')}).finally(function(){S.bkpEmAndamento=false;if(S.v==='bkp')render()})}
+});
 document.addEventListener('submit',function(e){e.preventDefault();
  if(e.target.id==='fm'){var i=document.getElementById('mi');send(i.value)}
  if(e.target.id==='fag'){var g=function(id){return document.getElementById(id).value};agenda.push({d:g('ad'),h:g('ah').replace(':00','h').replace(':','h'),n:g('an'),t:g('at'),p:g('ap')});toast('Agendado com '+g('ap'));saveCfg();render()}});
