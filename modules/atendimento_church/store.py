@@ -28,6 +28,7 @@ Configuração (variáveis de ambiente, no mesmo .env do ALFA):
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 try:
@@ -39,10 +40,16 @@ TABELA_CONVERSAS = "church_conversations"
 TABELA_CONFIG = "church_config"
 CONFIG_ID_GERAL = "geral"
 IGREJA_PADRAO = "default"
+LIMITE_PADRAO_CONVERSAS = 200
+LIMITE_MAXIMO_CONVERSAS = 2000
 
 
 class ChurchCloudIndisponivel(Exception):
     """Levantado quando a beta-cloud não está configurada ou não responde."""
+
+
+def _agora_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class ChurchStore:
@@ -82,8 +89,9 @@ class ChurchStore:
                 "RMD Atendimento Church entre aparelhos."
             )
 
-    def listar_conversas(self) -> list[dict[str, Any]]:
+    def listar_conversas(self, limit: int = LIMITE_PADRAO_CONVERSAS) -> list[dict[str, Any]]:
         self._exigir_configurado()
+        limite = max(1, min(int(limit or LIMITE_PADRAO_CONVERSAS), LIMITE_MAXIMO_CONVERSAS))
         resposta = requests.get(
             self._rest(TABELA_CONVERSAS),
             headers=self._cabecalhos(),
@@ -91,6 +99,7 @@ class ChurchStore:
                 "igreja_id": f"eq.{self.igreja_id}",
                 "select": "data",
                 "order": "updated_at.desc",
+                "limit": str(limite),
             },
             timeout=self.timeout,
         )
@@ -135,3 +144,13 @@ class ChurchStore:
         )
         resposta.raise_for_status()
         return documento
+
+    def exportar_backup(self) -> dict[str, Any]:
+        """Pacote completo (conversas + configuração) desta igreja, para download."""
+        self._exigir_configurado()
+        return {
+            "igreja_id": self.igreja_id,
+            "gerado_em": _agora_iso(),
+            "conversas": self.listar_conversas(limit=LIMITE_MAXIMO_CONVERSAS),
+            "config": self.obter_config(),
+        }
