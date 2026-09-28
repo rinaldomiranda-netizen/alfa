@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .store import ChurchStore
+from .store import LIMITE_PADRAO_CONVERSAS, ChurchStore
 
 CONFIG_PADRAO: dict[str, Any] = {
     "co": "Minha Igreja",
@@ -42,10 +42,10 @@ class AtendimentoChurchModule:
             "online": self.online,
         }
 
-    def listar_conversas(self) -> list[dict[str, Any]]:
+    def listar_conversas(self, limit: int = LIMITE_PADRAO_CONVERSAS) -> list[dict[str, Any]]:
         if not self.online:
             return []
-        return self.store.listar_conversas()
+        return self.store.listar_conversas(limit=limit)
 
     def salvar_conversa(self, documento: dict[str, Any]) -> dict[str, Any]:
         return self.store.salvar_conversa(documento)
@@ -58,3 +58,7 @@ class AtendimentoChurchModule:
 
     def salvar_config(self, documento: dict[str, Any]) -> dict[str, Any]:
         return self.store.salvar_config(documento)
+
+    def exportar_backup(self) -> dict[str, Any]:
+        """Levanta ChurchCloudIndisponivel se o módulo estiver offline."""
+        return self.store.exportar_backup()
