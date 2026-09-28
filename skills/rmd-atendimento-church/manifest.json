@@ -1,0 +1,16 @@
+{
+  "nome": "rmd-atendimento-church",
+  "descricao": "RMD Atendimento Church — versão do RMD Atendimento adaptada para igrejas: conversas multicanal (WhatsApp, site, telefone, presencial), nomes, filas e equipes, solicitações, serviços, fluxos, agenda, alertas, relatórios e permissões.",
+  "versao": "1.0.0",
+  "autor": "RMD",
+  "permissoes": ["module:read", "module:write", "module:admin"],
+  "ferramentas": [],
+  "intencoes": ["abrir_atendimento_church", "listar_conversas_church", "gerenciar_fila_church"],
+  "configuracao": {
+    "modo": "alpha-ou-standalone",
+    "entrypoint": "modules.atendimento_church.AtendimentoChurchModule"
+  },
+  "dependencias": ["alpha-core", "permission-manager"],
+  "compatibilidade": {"alpha": true, "standalone": true},
+  "offline": false
+}
