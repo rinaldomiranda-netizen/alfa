@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from .modulo import AtendimentoChurchModule
-from .store import ChurchStore
+from .store import LIMITE_PADRAO_CONVERSAS, ChurchStore
 
 
 class AtendimentoChurchService:
@@ -21,12 +21,12 @@ class AtendimentoChurchService:
         self.igreja_id = igreja_id
         self.modulo = modulo or AtendimentoChurchModule(store=ChurchStore(igreja_id=igreja_id))
 
-    def estado(self) -> dict[str, Any]:
+    def estado(self, limit: int = LIMITE_PADRAO_CONVERSAS) -> dict[str, Any]:
         """Estado completo consumido pela tela (GET /api/state)."""
         status = self.modulo.status()
         return {
             "online": status["online"],
-            "conversas": self.modulo.listar_conversas(),
+            "conversas": self.modulo.listar_conversas(limit=limit),
             "cfg": self.modulo.obter_config(),
         }
 
@@ -35,3 +35,14 @@ class AtendimentoChurchService:
 
     def salvar_config(self, documento: dict[str, Any]) -> dict[str, Any]:
         return self.modulo.salvar_config(documento)
+
+    def exportar_backup(self) -> dict[str, Any]:
+        """Gera o pacote de backup e registra a data na configuração da igreja."""
+        pacote = self.modulo.exportar_backup()
+        try:
+            cfg = dict(self.modulo.obter_config())
+            cfg["ultimo_backup"] = pacote["gerado_em"]
+            self.modulo.salvar_config(cfg)
+        except Exception:
+            pass  # o download já foi gerado; só a "última vez" não foi anotada
+        return pacote
