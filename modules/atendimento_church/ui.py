@@ -16,6 +16,14 @@ além do miolo original:
     GET  /api/backup     -> baixa um arquivo .json com todas as conversas e a
                               configuração desta igreja (backup de verdade)
     GET  /api/health     -> "ok" (usado por health checks de hospedagem)
+    GET  /api/whatsapp/webhook  -> confirmação do webhook para a Meta
+    POST /api/whatsapp/webhook  -> recebe mensagens do WhatsApp (Meta)
+    POST /api/whatsapp/enviar   -> envia uma mensagem de verdade pelo WhatsApp
+
+O webhook do WhatsApp (ver whatsapp.py) fica de fora da exigência de
+CHURCH_API_TOKEN, porque quem chama é a própria Meta, não a tela — a
+verificação dele é o handshake da Meta (GET) e, opcionalmente, a
+assinatura X-Hub-Signature-256 (WHATSAPP_APP_SECRET).
 
 Multi-igreja: cada igreja é identificada por um "igreja_id", passado
 como `?igreja=<id>` na própria URL (a tela lê isso de `window.IGREJA_ID`,
@@ -45,6 +53,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs
 
+from . import whatsapp
 from .service import AtendimentoChurchService
 from .store import IGREJA_PADRAO
 
@@ -79,20 +88,28 @@ def _resposta_json(start_response, dados: Any, status: str = "200 OK"):
     return [corpo]
 
 
-def _ler_corpo_json(environ) -> dict[str, Any]:
+def _ler_corpo_bruto(environ) -> bytes:
     try:
         tamanho = int(environ.get("CONTENT_LENGTH") or 0)
     except ValueError:
         tamanho = 0
-    bruto = environ["wsgi.input"].read(tamanho) if tamanho > 0 else b"{}"
+    return environ["wsgi.input"].read(tamanho) if tamanho > 0 else b""
+
+
+def _ler_corpo_json(environ) -> dict[str, Any]:
+    bruto = _ler_corpo_bruto(environ) or b"{}"
     try:
-        return json.loads(bruto or b"{}")
+        return json.loads(bruto)
     except json.JSONDecodeError:
         return {}
 
 
 def _query(environ) -> dict[str, list[str]]:
     return parse_qs(environ.get("QUERY_STRING", ""))
+
+
+def _query_simples(environ) -> dict[str, str]:
+    return {chave: valores[0] for chave, valores in _query(environ).items() if valores}
 
 
 def _igreja_id_da_requisicao(environ) -> str | None:
@@ -177,7 +194,11 @@ def criar_app_wsgi(
             start_response("200 OK", [("Content-Type", "text/plain; charset=utf-8"), ("Content-Length", str(len(corpo)))])
             return [corpo]
 
-        if caminho.startswith("/api/") and not _token_valido(environ):
+        if (
+            caminho.startswith("/api/")
+            and caminho != "/api/whatsapp/webhook"
+            and not _token_valido(environ)
+        ):
             return _resposta_json(start_response, {"erro": "chave de acesso inválida ou ausente"}, "401 Unauthorized")
 
         if caminho == "/api/state" and metodo == "GET":
@@ -230,6 +251,51 @@ def criar_app_wsgi(
                 ("Content-Disposition", f'attachment; filename="{nome}"'),
             ])
             return [corpo]
+
+        if caminho == "/api/whatsapp/webhook" and metodo == "GET":
+            desafio = whatsapp.verificar_webhook(_query_simples(environ))
+            if desafio is None:
+                corpo = b"forbidden"
+                start_response("403 Forbidden", [("Content-Type", "text/plain; charset=utf-8"), ("Content-Length", str(len(corpo)))])
+                return [corpo]
+            corpo = desafio.encode("utf-8")
+            start_response("200 OK", [("Content-Type", "text/plain; charset=utf-8"), ("Content-Length", str(len(corpo)))])
+            return [corpo]
+
+        if caminho == "/api/whatsapp/webhook" and metodo == "POST":
+            bruto = _ler_corpo_bruto(environ)
+            assinatura = environ.get("HTTP_X_HUB_SIGNATURE_256")
+            if not whatsapp.assinatura_valida(bruto, assinatura):
+                corpo = b"forbidden"
+                start_response("403 Forbidden", [("Content-Type", "text/plain; charset=utf-8"), ("Content-Length", str(len(corpo)))])
+                return [corpo]
+            try:
+                payload = json.loads(bruto or b"{}")
+            except json.JSONDecodeError:
+                payload = {}
+            extraida = whatsapp.extrair_mensagem_recebida(payload)
+            if extraida:
+                try:
+                    servico = resolver_service(environ)
+                    servico.registrar_mensagem_whatsapp(extraida["telefone"], extraida["nome"], extraida["texto"])
+                except Exception:
+                    pass  # nunca falha o webhook por causa da nuvem; a Meta reenvia depois
+            corpo = b"EVENT_RECEIVED"
+            start_response("200 OK", [("Content-Type", "text/plain; charset=utf-8"), ("Content-Length", str(len(corpo)))])
+            return [corpo]
+
+        if caminho == "/api/whatsapp/enviar" and metodo == "POST":
+            corpo_req = _ler_corpo_json(environ)
+            telefone = (corpo_req.get("telefone") or "").strip()
+            texto = (corpo_req.get("texto") or "").strip()
+            if not telefone or not texto:
+                return _resposta_json(start_response, {"ok": False, "erro": "telefone e texto são obrigatórios"}, "400 Bad Request")
+            try:
+                servico = resolver_service(environ)
+                enviado = servico.enviar_whatsapp(telefone, texto)
+            except Exception as erro:
+                return _resposta_json(start_response, {"ok": False, "erro": str(erro)}, "503 Service Unavailable")
+            return _resposta_json(start_response, {"ok": True, "enviado": enviado})
 
         if caminho in ("/", "/index.html") and metodo == "GET":
             igreja_id = _igreja_id_da_requisicao(environ)
