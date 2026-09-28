@@ -8,11 +8,12 @@ Central de atendimento multicanal (WhatsApp, site, telefone, presencial) adaptad
 
 - `store.py` — persistência na beta-cloud (Supabase), tabelas `church_conversations` e `church_config` (documentos jsonb, isolados por `igreja_id`). Também gera o pacote de backup.
 - `modulo.py` — fachada (`AtendimentoChurchModule`) usada pelo Alpha Core, no mesmo espírito de `modules/atendimento/modulo.py`.
-- `service.py` — orquestra a fachada exigindo sempre `igreja_id` (multi-tenant, uma igreja nunca vê dado de outra).
+- `service.py` — orquestra a fachada exigindo sempre `igreja_id` (multi-tenant, uma igreja nunca vê dado de outra) e cuida do envio/registro de mensagens do WhatsApp.
+- `whatsapp.py` — integração opcional com o WhatsApp Business Platform (Meta Cloud API): confere o webhook, entende as mensagens recebidas e envia mensagens de verdade quando configurado (veja "WhatsApp de verdade" abaixo).
 - `ui.py` — painel web (WSGI puro, sem framework): serve a tela (`webapp.html`) e os endpoints JSON (veja "Endereços da API" abaixo).
 - `webapp.html` — a tela em si (a mesma interface já validada com o Rinaldo), adaptada para falar com o backend Python por HTTP em vez do armazenamento do Artifact.
 - `launcher.py` — entrada simples para abrir o painel dentro do ALPHA.
-- `test_church.py` — testes automatizados (loja, fachada, serviço e app web — 29 testes).
+- `test_church.py` — testes automatizados (loja, fachada, serviço, WhatsApp e app web — 56 testes).
 
 ## Nuvem (beta-cloud)
 
@@ -55,18 +56,53 @@ Na tela "Backup", o botão "Baixar backup agora" chama `/api/backup` e baixa um 
 
 Os botões "Simular nova mensagem" e "Simular resposta da pessoa" (úteis para mostrar o sistema funcionando sem dados reais) só aparecem quando a tela é aberta com `?demo=1` na URL. No uso normal do dia a dia, esses botões ficam escondidos.
 
+## Tipo de atendimento e telas de acompanhamento
+
+Cada conversa pode ser marcada com um tipo (visitante, pedido de oração, aconselhamento pastoral, pedido de batismo, transferência de membresia, decisão por Cristo, dúvida geral ou outro) no painel de detalhes do atendimento. Duas telas novas usam essa marcação:
+
+- **Acompanhamento de visitantes** — lista quem foi marcado como "Visitante" e mostra se o contato já foi feito, avisando quando passa de 2 dias sem retorno.
+- **Pedidos de oração** — lista quem foi marcado como "Pedido de oração", para a equipe de intercessão acompanhar separadamente, marcando cada um como "orando" ou "atendido".
+
+O atendimento também pode ser atribuído a uma pessoa específica da equipe (não só à fila/departamento), guardar o dia/horário desejado para um agendamento e, opcionalmente, a data de aniversário da pessoa (formato `DD/MM`) — que aparece no Dashboard, na semana do aniversário.
+
+## Respostas rápidas configuráveis
+
+Em "Respostas rápidas", no menu, dá para cadastrar e remover as mensagens prontas que aparecem como sugestão durante o atendimento (antes eram fixas no código).
+
+## WhatsApp de verdade (opcional)
+
+Por padrão, o WhatsApp continua funcionando como um canal registrado manualmente, como sempre foi. Para ligar o envio e recebimento de verdade pelo número oficial da igreja, é preciso ter uma conta própria no **Meta for Developers** com um número do **WhatsApp Business** verificado — isso você cria e configura por sua conta (envolve aceitar os termos e eventuais custos do Meta; este módulo não cria contas nem lida com pagamento nenhum). Com a conta pronta, defina no `.env`:
+
+```
+WHATSAPP_TOKEN=                              # token de acesso do app da Meta
+WHATSAPP_PHONE_NUMBER_ID=                    # ID do número (painel da Meta)
+WHATSAPP_VERIFY_TOKEN=escolha-uma-palavra    # você escolhe; só confirma o endereço do webhook
+WHATSAPP_APP_SECRET=                         # opcional, camada extra de segurança
+```
+
+No painel da Meta (WhatsApp > Configuration > Webhook), cadastre:
+
+- **URL de callback**: `https://SEU-DOMINIO/api/whatsapp/webhook?igreja=<id>` (a tela "WhatsApp" no menu mostra esse endereço já pronto para copiar)
+- **Token de verificação**: o mesmo valor de `WHATSAPP_VERIFY_TOKEN`
+- **Campo (fields) a assinar**: `messages`
+
+Enquanto essas variáveis não estiverem definidas, nada muda — o indicador na tela "WhatsApp" continua mostrando "Não conectado" e o atendimento funciona normalmente pelos outros canais.
+
 ## Endereços da API
 
 ```
-GET  /api/state    -> {"online": bool, "conversas": [...], "cfg": {...}}
-GET  /api/stream   -> a mesma coisa, em tempo real (Server-Sent Events)
-POST /api/conversa -> grava uma conversa (corpo = documento da conversa)
-POST /api/cfg      -> grava a configuração geral (corpo = documento de config)
-GET  /api/backup   -> baixa um .json com todas as conversas e a configuração
-GET  /api/health   -> "ok" (health check de hospedagem)
+GET  /api/state             -> {"online": bool, "conversas": [...], "cfg": {...}, "zap": bool}
+GET  /api/stream            -> a mesma coisa, em tempo real (Server-Sent Events)
+POST /api/conversa          -> grava uma conversa (corpo = documento da conversa)
+POST /api/cfg               -> grava a configuração geral (corpo = documento de config)
+GET  /api/backup            -> baixa um .json com todas as conversas e a configuração
+GET  /api/health            -> "ok" (health check de hospedagem)
+GET  /api/whatsapp/webhook  -> confirmação do webhook para a Meta
+POST /api/whatsapp/webhook  -> recebe mensagens do WhatsApp (chamado pela Meta)
+POST /api/whatsapp/enviar   -> envia uma mensagem de verdade pelo WhatsApp
 ```
 
-Todas (menos `/api/health`) aceitam `?igreja=<id>` para multi-tenant e, se `CHURCH_API_TOKEN` estiver configurado, exigem a chave em `X-Church-Token` (cabeçalho) ou `?token=...`.
+Todas (menos `/api/health` e o webhook do WhatsApp) aceitam `?igreja=<id>` para multi-tenant e, se `CHURCH_API_TOKEN` estiver configurado, exigem a chave em `X-Church-Token` (cabeçalho) ou `?token=...`. O webhook do WhatsApp fica de fora dessa exigência porque quem chama é a própria Meta — a verificação dele é o handshake de confirmação (GET) e, opcionalmente, a assinatura `X-Hub-Signature-256` (`WHATSAPP_APP_SECRET`).
 
 ## Como abrir
 
