@@ -1,0 +1,43 @@
+/* App do consumidor — celular primeiro */
+body { padding-bottom: 76px; }
+#topo { background: var(--barra); color: var(--barra-texto); padding: .8rem 1rem 1rem; position: sticky; top: 0; z-index: 10; }
+#topo .marca { margin-bottom: .7rem; }
+#topo .busca { display: flex; gap: .5rem; }
+#topo .busca input { border: 0; border-radius: 999px; padding-left: 1rem; background: #fff; color: #1C2B24; }
+#topo .loc { background: rgba(255,255,255,.14); color: #fff; border-radius: 999px; border: 0; padding: 0 .9rem; font-weight: 700; white-space: nowrap; cursor: pointer; }
+#tela { max-width: 1100px; margin: 0 auto; padding: 1rem; }
+.chips { display: flex; gap: .45rem; flex-wrap: wrap; margin: 0 0 .7rem; }
+.chip { border: 1.5px solid var(--borda); background: var(--superficie); padding: .4rem .85rem; border-radius: 999px; font-weight: 700; font-size: .85rem; white-space: nowrap; cursor: pointer; }
+.chip.ativo { background: var(--verde); border-color: var(--verde); color: #fff; }
+.filtros { display: flex; gap: .45rem; flex-wrap: wrap; margin-bottom: .8rem; }
+.filtros select { width: auto; padding: .4rem .6rem; border-radius: 999px; font-size: .85rem; }
+.faixa-impacto { background: linear-gradient(120deg, var(--verde) 0%, #12784f 100%); color: #fff; border-radius: var(--raio); padding: .9rem 1rem; margin-bottom: 1rem; display: flex; gap: 1rem; flex-wrap: wrap; }
+.faixa-impacto div { flex: 1 1 110px; } .faixa-impacto b { display: block; font-size: 1.15rem; color: var(--amarelo); }
+.ofertas { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+.card { background: var(--superficie); border-radius: var(--raio); border: 1px solid var(--borda); box-shadow: var(--sombra); overflow: hidden; cursor: pointer; display: flex; flex-direction: column; }
+.card .corpo { padding: .8rem .9rem 1rem; display: flex; flex-direction: column; gap: .3rem; flex: 1; }
+.card .loja { font-size: .8rem; color: var(--texto-2); font-weight: 600; }
+.card .nome { font-weight: 800; font-size: 1.02rem; }
+.card .precos { display: flex; align-items: baseline; gap: .5rem; margin-top: auto; }
+.card .infos { display: flex; gap: .35rem; flex-wrap: wrap; }
+.vazio { text-align: center; padding: 2.5rem 1rem; color: var(--texto-2); }
+#menu { position: fixed; bottom: 0; left: 0; right: 0; background: var(--superficie); border-top: 1px solid var(--borda); display: flex; justify-content: space-around; padding: .35rem 0 calc(.35rem + env(safe-area-inset-bottom)); z-index: 20; }
+#menu button { background: none; border: 0; display: flex; flex-direction: column; align-items: center; font-size: .72rem; font-weight: 700; color: var(--texto-2); padding: .3rem .6rem; cursor: pointer; }
+#menu button .ic { font-size: 1.25rem; line-height: 1; margin-bottom: .1rem; }
+#menu button.ativo { color: var(--verde-vivo); }
+.qtd { display: flex; align-items: center; gap: .8rem; }
+.qtd button { width: 42px; height: 42px; border-radius: 50%; border: 1.5px solid var(--borda); background: var(--superficie); font-size: 1.3rem; font-weight: 800; cursor: pointer; }
+.qtd b { font-size: 1.3rem; min-width: 2ch; text-align: center; }
+.modos { display: flex; gap: .5rem; } .modos button { flex: 1; }
+.modos button.ativo { background: var(--verde); color: #fff; }
+.resumo-total { border-top: 1px dashed var(--borda); margin-top: .8rem; padding-top: .6rem; }
+.resumo-total div { display: flex; justify-content: space-between; } .resumo-total .total { font-weight: 900; font-size: 1.15rem; }
+.economia { color: var(--verde-vivo); font-weight: 800; }
+.codigo { text-align: center; background: var(--superficie-2); border-radius: var(--raio); padding: 1rem; }
+.codigo .pin { font-size: 2.4rem; font-weight: 900; letter-spacing: .3em; color: var(--verde); }
+[data-tema="escuro"] .codigo .pin { color: var(--verde-vivo); }
+.codigo img { width: 190px; height: 190px; background: #fff; padding: 6px; border-radius: 10px; }
+.linha-tempo { list-style: none; padding: 0; margin: .5rem 0; } .linha-tempo li { padding: .3rem 0 .3rem 1.1rem; border-left: 3px solid var(--verde-vivo); margin-left: .3rem; font-size: .88rem; }
+.galeria { display: flex; gap: .4rem; overflow-x: auto; } .galeria img { height: 64px; border-radius: 8px; }
+.aviso-teste { background: rgba(255,201,74,.3); border-radius: 10px; padding: .55rem .7rem; font-size: .82rem; margin: .6rem 0; }
+@media (min-width: 900px) { #menu { max-width: 560px; left: 50%; transform: translateX(-50%); border-radius: 18px 18px 0 0; border: 1px solid var(--borda); } }

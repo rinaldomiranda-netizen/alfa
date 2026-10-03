@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Recepção — RMD Atendimento</title>
+<style>
+:root{font-family:Inter,Segoe UI,Arial,sans-serif;color:#eef3f8;background:#081018}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#142432,#081018 45%);min-height:100vh}
+.app{max-width:1180px;margin:auto;padding:18px;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px}
+.card{background:rgba(11,22,32,.94);border:1px solid #243645;border-radius:18px;box-shadow:0 18px 50px rgba(0,0,0,.25)}
+header{padding:18px 20px;display:flex;gap:14px;align-items:center;justify-content:space-between}
+h1{margin:0;font-size:22px}.muted{color:#91a4b5;font-size:13px}.pill{padding:7px 10px;border-radius:999px;border:1px solid #2d4658;font-size:12px;color:#a8d6ff}
+#messages{height:calc(100vh - 220px);min-height:420px;overflow:auto;padding:22px}
+.msg{max-width:82%;margin:0 0 14px;padding:12px 14px;border-radius:14px;line-height:1.45;white-space:pre-wrap}
+.beta{background:#112638;border:1px solid #214158}.user{margin-left:auto;background:#1c3426;border:1px solid #315d42}
+.system{margin:0 auto;background:#20262d;border:1px solid #37424c;color:#c0cad2;font-size:13px}
+.status{padding:12px 20px;border-top:1px solid #243645;border-bottom:1px solid #243645;color:#a6b8c6;font-size:12px}
+.composer{padding:14px;border-top:1px solid #243645;display:flex;gap:10px}
+input[type=text]{width:100%;background:#0d1821;color:#fff;border:1px solid #2b4354;border-radius:12px;padding:13px 14px;outline:none}
+button{font:inherit;border:0;border-radius:12px;padding:12px 14px;background:#1b78b8;color:#fff;font-weight:700;cursor:pointer}
+button.secondary{background:#20323f}.actions{display:flex;gap:8px;flex-wrap:wrap;padding:0 14px 14px}.actions button{flex:1;min-width:130px}
+aside{padding:16px}.field{margin-bottom:12px}.field label{display:block;font-size:12px;color:#91a4b5;margin-bottom:6px}
+.history{max-height:420px;overflow:auto;display:grid;gap:8px}.history button{text-align:left;background:#0e1c26;border:1px solid #203744;font-weight:500}
+.empty{color:#8193a2;font-size:13px;padding:10px 0}
+@media(max-width:860px){.app{grid-template-columns:1fr}#messages{height:62vh}.history{max-height:240px}}
+</style>
+</head>
+<body>
+<div class="app">
+<main class="card">
+<header>
+<div><h1>Recepção por roteiro</h1><div class="muted">Protocolo de recepção do ALFA (identificação, confirmação e roteiro)</div><div id="perfil" class="pill" style="display:inline-block;margin-top:8px">perfil: ?</div></div>
+<div id="health" class="pill">verificando...</div>
+</header>
+<div class="status" id="status">Nenhum atendimento ativo</div>
+<div id="messages"></div>
+<div class="actions">
+<button id="novo">Novo atendimento</button>
+<button id="finalizar" class="secondary">Finalizar</button>
+<button id="atualizar" class="secondary">Atualizar histórico</button>
+</div>
+<form id="form" class="composer">
+<input id="texto" type="text" autocomplete="off" placeholder="Digite a resposta...">
+<button>Enviar</button>
+</form>
+</main>
+<aside class="card">
+<div class="field"><a href="/" style="color:#a8d6ff">← Voltar ao RMD Atendimento</a></div>
+<div class="field"><div class="muted">Histórico persistido</div></div>
+<div id="historico" class="history"><div class="empty">Nenhum registro carregado.</div></div>
+</aside>
+</div>
+<script src="/static/js/recepcao.js"></script>
+</body>
+</html>
+

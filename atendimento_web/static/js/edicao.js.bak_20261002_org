@@ -1,0 +1,75 @@
+/* RMD Atendimento Church — mesmo sistema do RMD Atendimento, com o nome e as palavras da igreja.
+   Só é carregado quando o servidor roda com RMD_EDICAO=church. Não muda dados nem regras: só o texto da tela. */
+(function () {
+  "use strict";
+  if (document.documentElement.dataset.edicao !== "church") return;
+
+  // frases inteiras primeiro, depois palavras soltas
+  const TROCAS = [
+    ["Catálogo comercial usado nos orçamentos.", "O que a igreja oferece às pessoas."],
+    ["Propostas, envio e negociação.", "Pedidos que precisam de acompanhamento até o fim."],
+    ["Orçamentos e conversão", "Solicitações e acompanhamento"],
+    ["Orçamentos abertos", "Solicitações abertas"],
+    ["Novo orçamento", "Nova solicitação"],
+    ["Sem orçamentos.", "Sem solicitações."],
+    ["Serviços & Preços", "Serviços"],
+    ["quem fala com a empresa", "quem fala com a igreja"],
+    ["Módulo oficial do ALFA", "Atendimento da igreja • módulo ALFA"],
+    ["central de atendimento", "atendimento da igreja"],
+    ["Nome da empresa", "Nome da igreja"],
+    ["nome da empresa", "nome da igreja"],
+    ["RMD Atendimento Church", "RMD Atendimento Church"],
+    ["RMD Atendimento", "RMD Atendimento Church"],
+    ["Orçamentos", "Solicitações"],
+    ["Orçamento", "Solicitação"],
+    ["orçamentos", "solicitações"],
+    ["orçamento", "solicitação"],
+    ["Empresas", "Igrejas"],
+    ["Empresa", "Igreja"],
+    ["empresas", "igrejas"],
+    ["empresa", "igreja"]
+  ];
+  const CHURCH = "RMD Atendimento Church";
+
+  function trocar(texto) {
+    if (!texto || !/[OoSsqMcNnREe]/.test(texto)) return texto;
+    let t = texto;
+    for (const [de, para] of TROCAS) {
+      if (de === CHURCH) continue;
+      if (t.indexOf(de) === -1) continue;
+      if (de === "RMD Atendimento") t = t.split(CHURCH).map((p) => p.split(de).join(para)).join(CHURCH);
+      else t = t.split(de).join(para);
+    }
+    return t;
+  }
+  function tratarNo(no) {
+    if (no.nodeType === 3) {
+      const pai = no.parentNode;
+      if (pai && (pai.nodeName === "SCRIPT" || pai.nodeName === "STYLE" || pai.nodeName === "TEXTAREA")) return;
+      const novo = trocar(no.nodeValue);
+      if (novo !== no.nodeValue) no.nodeValue = novo;
+      return;
+    }
+    if (no.nodeType !== 1) return;
+    for (const at of ["placeholder", "title", "aria-label", "data-rotulo"]) {
+      const v = no.getAttribute && no.getAttribute(at);
+      if (v) { const n = trocar(v); if (n !== v) no.setAttribute(at, n); }
+    }
+    for (const filho of no.childNodes) tratarNo(filho);
+  }
+  function tratarTitulo() { const n = trocar(document.title); if (n !== document.title) document.title = n; }
+
+  function iniciar() {
+    tratarNo(document.body);
+    tratarTitulo();
+    new MutationObserver((lista) => {
+      for (const m of lista) {
+        if (m.type === "characterData") tratarNo(m.target);
+        else if (m.type === "attributes") tratarNo(m.target);
+        else m.addedNodes.forEach(tratarNo);
+      }
+      tratarTitulo();
+    }).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["placeholder", "title", "aria-label", "data-rotulo"] });
+  }
+  if (document.body) iniciar(); else document.addEventListener("DOMContentLoaded", iniciar);
+})();

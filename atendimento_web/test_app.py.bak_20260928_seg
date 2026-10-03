@@ -1,0 +1,181 @@
+"""Testes do servidor web do RMD Atendimento (HTTP de verdade, porta aleatória)."""
+import http.client
+import json
+import shutil
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from urllib.parse import urlparse
+
+from atendimento_web import app, recepcao
+from modules.atendimento.plataforma import Plataforma, demo, seguranca
+
+_ITERACOES = seguranca.ITERACOES
+
+
+class Cliente:
+    def __init__(self, porta):
+        self.porta = porta
+        self.cookie = None
+
+    def pedir(self, metodo, caminho, dados=None, cabecalhos=None, csrf=True):
+        conexao = http.client.HTTPConnection("127.0.0.1", self.porta, timeout=10)
+        h = dict(cabecalhos or {})
+        corpo = None
+        if dados is not None:
+            corpo = json.dumps(dados).encode()
+            h["Content-Type"] = "application/json"
+        if csrf:
+            h["X-RMD"] = "1"
+        if self.cookie:
+            h["Cookie"] = self.cookie
+        conexao.request(metodo, caminho, body=corpo, headers=h)
+        resposta = conexao.getresponse()
+        bruto = resposta.read()
+        novo = resposta.getheader("Set-Cookie")
+        if novo:
+            self.cookie = novo.split(";", 1)[0]
+        conexao.close()
+        try:
+            conteudo = json.loads(bruto.decode()) if bruto else None
+        except ValueError:
+            conteudo = bruto.decode(errors="replace")
+        return resposta.status, conteudo, resposta
+
+
+class AtendimentoWebTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        seguranca.ITERACOES = 2_000
+        cls.pasta = Path(tempfile.mkdtemp())
+        cls.plataforma = Plataforma(cls.pasta / "web.db", pasta_backups=cls.pasta / "bk")
+        cls.plataforma.envio_sincrono = True
+        app.definir_plataforma(cls.plataforma)
+        cls.demo = demo.garantir_demonstracao(cls.plataforma)
+        recepcao.definir_store(None)
+        recepcao.caminho_store = lambda: cls.pasta / "recepcao.json"
+        cls.servidor = app.criar_servidor("127.0.0.1", 0)
+        cls.thread = threading.Thread(target=cls.servidor.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.porta = cls.servidor.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.servidor.shutdown()
+        cls.servidor.server_close()
+        cls.servidor.parar_rotina.set()
+        shutil.rmtree(cls.pasta, ignore_errors=True)
+        seguranca.ITERACOES = _ITERACOES
+
+    def entrar(self, perfil):
+        cliente = Cliente(self.porta)
+        token = seguranca.criar_token_unico(self.demo["usuarios"][perfil], self.demo["empresa_id"])
+        status, _, resposta = cliente.pedir("GET", "/entrar?token=" + token, csrf=False)
+        self.assertEqual(status, 303)
+        self.assertIn("HttpOnly", resposta.getheader("Set-Cookie"))
+        self.assertIn("SameSite=Strict", resposta.getheader("Set-Cookie"))
+        return cliente
+
+    def test_saude_e_cabecalhos_de_seguranca(self):
+        status, corpo, resposta = Cliente(self.porta).pedir("GET", "/api/health")
+        self.assertEqual(status, 200)
+        self.assertTrue(corpo["ok"])
+        self.assertIn("default-src 'self'", resposta.getheader("Content-Security-Policy"))
+        self.assertEqual(resposta.getheader("X-Frame-Options"), "DENY")
+        self.assertIsNone(resposta.getheader("Access-Control-Allow-Origin"))
+
+    def test_sem_login_nao_ve_dados(self):
+        status, corpo, _ = Cliente(self.porta).pedir("GET", "/api/contatos")
+        self.assertEqual(status, 401)
+        status, corpo, _ = Cliente(self.porta).pedir("GET", "/api/recepcao/historico")
+        self.assertEqual(status, 401)
+
+    def test_csrf_bloqueia_sem_cabecalho(self):
+        cliente = self.entrar("admin")
+        status, _, _ = cliente.pedir("POST", "/api/contatos", {"nome": "Sem CSRF"}, csrf=False)
+        self.assertEqual(status, 403)
+        status, corpo, _ = cliente.pedir("POST", "/api/contatos", {"nome": "Com CSRF", "telefone": "79911223344"})
+        self.assertEqual(status, 200, corpo)
+
+    def test_telas_por_perfil(self):
+        _, admin, _ = self.entrar("admin").pedir("GET", "/api/sessao")
+        _, atendente, _ = self.entrar("atendente").pedir("GET", "/api/sessao")
+        _, cliente, _ = self.entrar("cliente").pedir("GET", "/api/sessao")
+        _, owner, _ = self.entrar("owner").pedir("GET", "/api/sessao")
+        self.assertIn("users", admin["telas"])
+        self.assertNotIn("users", atendente["telas"])
+        self.assertIn("chat", atendente["telas"])
+        self.assertEqual(cliente["telas"], ["portal"])
+        self.assertIn("companies", owner["telas"])
+        self.assertNotIn("companies", admin["telas"])
+        status, _, _ = self.entrar("atendente").pedir("GET", "/api/usuarios")
+        self.assertEqual(status, 403)
+
+    def test_arquivos_estaticos_e_protecao_de_caminho(self):
+        status, corpo, _ = Cliente(self.porta).pedir("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn("RMD Atendimento", corpo)
+        status, _, _ = Cliente(self.porta).pedir("GET", "/static/../app.py")
+        self.assertEqual(status, 404)
+
+    def test_chat_publico_do_site(self):
+        visitante = Cliente(self.porta)
+        status, corpo, _ = visitante.pedir("POST", "/api/publico/demonstracao/conversas", {"nome": "Visitante Web", "texto": "oi"})
+        self.assertEqual(status, 200, corpo)
+        token = corpo["token"]
+        status, corpo, _ = visitante.pedir("POST", f"/api/publico/conversas/{token}/mensagens", {"texto": "Orçamento"})
+        self.assertEqual(corpo["status"], "aguardando")
+        status, _, _ = visitante.pedir("GET", "/api/publico/conversas/token-que-nao-existe-123456")
+        self.assertEqual(status, 404)
+
+    def test_api_publica_com_chave(self):
+        admin = self.entrar("admin")
+        _, chave, _ = admin.pedir("POST", "/api/integracoes/chaves", {"nome": "Teste", "escopos": ["names:read"]})
+        externo = Cliente(self.porta)
+        status, corpo, _ = externo.pedir("GET", "/api/v1/nomes", cabecalhos={"Authorization": "Bearer " + chave["chave"]}, csrf=False)
+        self.assertEqual(status, 200)
+        self.assertTrue(corpo["itens"])
+        status, _, _ = externo.pedir("GET", "/api/v1/nomes", cabecalhos={"Authorization": "Bearer rmd_falsa.123"}, csrf=False)
+        self.assertEqual(status, 401)
+
+    def test_recepcao_por_roteiro_continua_funcionando(self):
+        cliente = self.entrar("atendente")
+        status, corpo, _ = cliente.pedir("POST", "/api/recepcao/atendimentos", {})
+        if status == 400 and "bibliotecas" in (corpo or {}).get("erro", ""):
+            self.skipTest("Bibliotecas de câmera/tela do ALFA não instaladas neste ambiente.")
+        self.assertEqual(status, 200, corpo)
+        self.assertIn("Com quem estou falando?", corpo["mensagem"])
+        sid = corpo["session_id"]
+        status, corpo, _ = cliente.pedir("POST", f"/api/recepcao/atendimentos/{sid}/mensagens", {"texto": "Maria"})
+        self.assertEqual(corpo["acao"], "confirmar")
+        status, corpo, _ = cliente.pedir("POST", f"/api/recepcao/atendimentos/{sid}/mensagens", {"texto": "sim"})
+        self.assertTrue(corpo["status"]["ativo"])
+        status, corpo, _ = cliente.pedir("GET", "/api/recepcao/historico")
+        self.assertGreaterEqual(len(corpo["itens"]), 1)
+        outro = self.entrar("admin")
+        status, _, _ = outro.pedir("POST", f"/api/recepcao/atendimentos/{sid}/mensagens", {"texto": "x"})
+        self.assertEqual(status, 200)  # mesma empresa pode continuar a sessão
+
+
+class IpAtrasDeProxyTests(unittest.TestCase):
+    def _ip(self, atras, cabecalhos):
+        falso = type("H", (), {"headers": cabecalhos, "client_address": ("10.0.0.9", 1234)})()
+        antigo = app.ATRAS_DE_PROXY
+        app.ATRAS_DE_PROXY = atras
+        try:
+            return app.Handler._ip(falso)
+        finally:
+            app.ATRAS_DE_PROXY = antigo
+
+    def test_sem_proxy_ignora_cabecalho_inventado(self):
+        self.assertEqual(self._ip(False, {"X-Forwarded-For": "1.2.3.4"}), "10.0.0.9")
+
+    def test_atras_de_proxy_usa_ip_do_visitante(self):
+        self.assertEqual(self._ip(True, {"X-Forwarded-For": "1.2.3.4, 10.0.0.1"}), "1.2.3.4")
+        self.assertEqual(self._ip(True, {"X-Real-IP": "5.6.7.8"}), "5.6.7.8")
+        self.assertEqual(self._ip(True, {}), "10.0.0.9")
+
+
+if __name__ == "__main__":
+    unittest.main()

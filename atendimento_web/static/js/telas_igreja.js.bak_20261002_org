@@ -1,0 +1,249 @@
+/* RMD Atendimento Church — telas próprias da igreja (só carregado quando RMD_EDICAO=church).
+   Visitantes & Consolidação, Pedidos de oração e o painel "Igreja hoje" no Dashboard.
+   Mesma regra do resto do sistema: nada vindo do servidor entra como HTML. */
+"use strict";
+
+(function () {
+  const css = document.createElement("link");
+  css.rel = "stylesheet"; css.href = "/static/css/igreja.css";
+  document.head.append(css);
+  // menu: seção própria da igreja logo depois de "Principal"
+  if (!MENU.some(([s]) => s === "Igreja")) MENU.splice(1, 0, ["Igreja", ["guests", "prayers"]]);
+})();
+
+const ETAPAS_IGREJA = [
+  ["novo", "Primeira visita", "👋"], ["contatado", "Contatado", "📞"], ["retornou", "Voltou ao culto", "⛪"],
+  ["grupo", "Em célula / grupo", "🤝"], ["integrado", "Integrado", "✅"],
+];
+const COMO_CONHECEU = [["", "—"], ["convite", "Convite de alguém"], ["redes_sociais", "Redes sociais"], ["passando", "Estava passando"],
+  ["familia", "Família"], ["evento", "Evento da igreja"], ["outro", "Outro"]];
+const CATEGORIAS_ORACAO = [["saude", "Saúde", "🩺"], ["familia", "Família", "👨‍👩‍👧"], ["financeiro", "Finanças", "💼"], ["trabalho", "Trabalho", "🛠️"],
+  ["espiritual", "Vida espiritual", "🕊️"], ["gratidao", "Gratidão", "🙌"], ["outro", "Outro", "🙏"]];
+const nomeCategoria = (c) => (CATEGORIAS_ORACAO.find((x) => x[0] === c) || CATEGORIAS_ORACAO[6]);
+
+function linkWhatsApp(numero, texto) {
+  const n = String(numero || "").replace(/\D/g, "");
+  if (!n) return null;
+  return "https://wa.me/" + n + "?text=" + encodeURIComponent(texto || "");
+}
+function botaoWhatsApp(numero, texto, rotulo = "WhatsApp") {
+  const url = linkWhatsApp(numero, texto);
+  if (!url) return null;
+  return h("a", { class: "btn pequeno ig-whats", href: url, target: "_blank", rel: "noopener", text: "💬 " + rotulo, on: { click: (e) => e.stopPropagation() } });
+}
+function primeiroNome(nome) { return String(nome || "").trim().split(/\s+/)[0] || ""; }
+function nomeIgreja() { return (App.sessao && App.sessao.empresa && App.sessao.empresa.empresa_nome) || "nossa igreja"; }
+function slugIgreja() { return (App.sessao && App.sessao.empresa && App.sessao.empresa.empresa_slug) || ""; }
+function hojeIso() { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); }
+
+/* ---------------------------------------------------------------- cartão do visitante (QR) */
+function carregarQrIgreja() {
+  if (window.qrcode) return Promise.resolve(window.qrcode);
+  return new Promise((ok, erro) => { const sc = document.createElement("script"); sc.src = "/static/js/qrcode.js"; sc.onload = () => ok(window.qrcode); sc.onerror = erro; document.head.append(sc); });
+}
+function abrirCartaoVisitante() {
+  const url = location.origin + "/visitante?e=" + encodeURIComponent(slugIgreja());
+  const lugar = h("div", { class: "ig-qr" }, h("div", { class: "suave", text: "Gerando o QR…" }));
+  carregarQrIgreja().then((qrcode) => {
+    const qr = qrcode(0, "M"); qr.addData(url); qr.make();
+    limpar(lugar).append(h("img", { src: qr.createDataURL(7, 12), alt: "QR do cartão do visitante" }));
+    lugar.dataset.img = qr.createDataURL(12, 16);
+  }).catch(() => limpar(lugar).append(h("div", { class: "erro-texto", text: "Não consegui gerar o QR." })));
+  const imprimir = () => {
+    const img = lugar.dataset.img; if (!img) return;
+    const w = window.open("", "_blank", "width=820,height=1000"); if (!w) return toast("Libere as janelas (pop-up) para imprimir.", "erro");
+    const d = w.document;
+    d.title = "Cartão do visitante";
+    const st = d.createElement("style");
+    st.textContent = "body{font-family:Segoe UI,Arial,sans-serif;text-align:center;padding:40px;color:#102a3a}h1{font-size:42px;margin:0 0 6px}h2{font-weight:500;color:#3b5b6e;margin:0 0 28px}img{width:420px;max-width:90%}p{font-size:20px;color:#3b5b6e}.passos{display:flex;justify-content:center;gap:28px;margin-top:22px;font-size:17px}";
+    d.head.append(st);
+    const t = (tag, txt) => { const e = d.createElement(tag); e.textContent = txt; return e; };
+    const im = d.createElement("img"); im.src = img; im.alt = "QR";
+    const passos = d.createElement("div"); passos.className = "passos";
+    ["1. Abra a câmera do celular", "2. Aponte para o código", "3. Preencha em 1 minuto"].forEach((s) => passos.append(t("div", s)));
+    d.body.append(t("h1", "Seja bem-vindo!"), t("h2", nomeIgreja()), im, t("p", "É a sua primeira vez aqui? Quer um pedido de oração?"), passos);
+    setTimeout(() => { w.focus(); w.print(); }, 400);
+  };
+  modal({ titulo: "Cartão do visitante", subtitulo: "Coloque o QR na entrada, no telão ou no boletim. Quem ler cai direto na consolidação.",
+    conteudo: h("div", { class: "ig-cartao" }, lugar,
+      h("div", { class: "campo" }, h("label", { text: "Endereço do cartão" }), h("pre", { class: "mono", text: url })),
+      h("div", { class: "ig-linha" },
+        h("button", { class: "btn", type: "button", text: "Copiar link", on: { click: () => navigator.clipboard.writeText(url).then(() => toast("Link copiado.")) } }),
+        h("a", { class: "btn", href: url, target: "_blank", rel: "noopener", text: "Abrir o cartão" }),
+        h("button", { class: "btn primario", type: "button", text: "🖨 Imprimir cartaz", on: { click: imprimir } }))),
+    acoes: [{ texto: "Fechar" }] });
+}
+
+/* ================================================================ VISITANTES & CONSOLIDAÇÃO */
+registrarTela("guests", {
+  titulo: "Visitantes & Consolidação", sub: "Cada pessoa que chega, acompanhada até se sentir em casa.", icone: "✚",
+  async render(el, { acoes }) {
+    const [lista, resumo, equipe] = await Promise.all([api("/api/igreja/visitantes"), api("/api/igreja/resumo"), api("/api/equipe").catch(() => [])]);
+    const editar = (j) => {
+      const form = h("div", { class: "formulario" },
+        j ? null : campo("Nome", entrada("nome", "", { placeholder: "Nome da pessoa ou da família" })),
+        j ? null : campo("WhatsApp", entrada("telefone", "", { placeholder: "(79) 99999-0000", inputmode: "tel" })),
+        j ? null : campo("Data de nascimento", entrada("nascimento", "", { type: "date" }), "Para lembrar do aniversário."),
+        campo("Etapa", seletor("etapa", ETAPAS_IGREJA.map(([v, t]) => [v, t]), j ? j.etapa : "novo")),
+        campo("Primeira visita", entrada("primeira_visita", j ? j.primeira_visita : hojeIso(), { type: "date" })),
+        campo("Próximo contato", entrada("proximo_contato", j ? j.proximo_contato || "" : "", { type: "date" }), "O sistema avisa quando passar da data."),
+        campo("Como conheceu a igreja", seletor("como_conheceu", COMO_CONHECEU, j ? j.como_conheceu || "" : "")),
+        campo("Convidado por", entrada("convidado_por", j ? j.convidado_por || "" : "")),
+        campo("Responsável pelo acompanhamento", seletor("responsavel_id", [["", "—"], ...equipe.map((u) => [u.id, u.nome])], j ? j.responsavel_id || "" : "")),
+        h("div", { class: "campo" }, marcador("quer_visita", j ? j.quer_visita : false, "Quer receber uma visita")),
+        campo("Anotações", areaTexto("observacao", j ? j.observacao || "" : "", { rows: 4 }), null, true));
+      modal({ titulo: j ? j.nome : "Novo visitante", subtitulo: j ? "Acompanhamento da pessoa" : "Cadastro rápido — leva 30 segundos", conteudo: form, larga: true,
+        acoes: [{ texto: "Cancelar" }, { texto: "Salvar", classe: "primario", acao: async () => {
+          const d = lerFormulario(form);
+          await api(j ? "/api/igreja/visitantes/" + j.id : "/api/igreja/visitantes", { metodo: j ? "PUT" : "POST", dados: d });
+          toast(j ? "Acompanhamento salvo." : "Visitante cadastrado. 🙌"); mostrarTela();
+        } }] });
+    };
+    const faleiCom = (j) => {
+      const form = h("div", { class: "formulario" },
+        campo("O que conversaram?", areaTexto("nota", "", { rows: 3, placeholder: "Ex.: agradeceu a visita, vai voltar domingo." }), null, true),
+        campo("Próximo contato em (dias)", entrada("dias", 7, { type: "number", min: 1, max: 90 })));
+      modal({ titulo: "Falei com " + primeiroNome(j.nome), conteudo: form, acoes: [{ texto: "Cancelar" }, { texto: "Registrar", classe: "primario", acao: async () => {
+        await api("/api/igreja/visitantes/" + j.id + "/contato", { dados: lerFormulario(form) }); toast("Contato registrado."); mostrarTela();
+      } }] });
+    };
+    const avancar = async (j) => {
+      const i = ETAPAS_IGREJA.findIndex(([v]) => v === j.etapa);
+      if (i < 0 || i >= ETAPAS_IGREJA.length - 1) return;
+      try { await api("/api/igreja/visitantes/" + j.id, { metodo: "PUT", dados: { etapa: ETAPAS_IGREJA[i + 1][0] } }); toast(j.nome + " → " + ETAPAS_IGREJA[i + 1][1]); mostrarTela(); }
+      catch (e) { falha(e); }
+    };
+    if (pode("visitantes", "criar")) acoes.append(h("button", { class: "btn", type: "button", text: "▦ Cartão do visitante (QR)", on: { click: abrirCartaoVisitante } }),
+      h("button", { class: "btn primario", type: "button", text: "+ Novo visitante", on: { click: () => editar(null) } }));
+
+    el.append(h("div", { class: "grade estatisticas ig-estat" },
+      cartaoNumero("Visitantes (7 dias)", resumo.visitantes_semana, "cartão + cadastro da equipe", "neutra"),
+      cartaoNumero("Sem retorno", resumo.sem_retorno, resumo.sem_retorno ? "passaram da data de contato" : "ninguém esquecido 👍", resumo.sem_retorno ? "ruim" : "neutra"),
+      cartaoNumero("Integrados (30 dias)", resumo.integrados_mes, "chegaram ao fim da jornada", "neutra"),
+      cartaoNumero("Em acompanhamento", lista.filter((j) => j.etapa !== "integrado").length, "pessoas na jornada", "neutra")));
+
+    const quadro = h("div", { class: "ig-quadro" });
+    ETAPAS_IGREJA.forEach(([chave, titulo, ic]) => {
+      const pessoas = lista.filter((j) => j.etapa === chave);
+      const coluna = h("section", { class: "ig-coluna", dataset: { etapa: chave } },
+        h("header", null, h("span", { class: "ig-ic", text: ic }), h("b", { text: titulo }), h("span", { class: "ig-conta", text: String(pessoas.length) })));
+      if (!pessoas.length) coluna.append(h("div", { class: "ig-vazio", text: chave === "novo" ? "Nenhum visitante novo. Divulgue o cartão do visitante!" : "—" }));
+      pessoas.forEach((j) => {
+        const msg = `Olá, ${primeiroNome(j.nome)}! Aqui é da ${nomeIgreja()}. Foi uma alegria ter você conosco! Como podemos orar por você esta semana?`;
+        const prox = j.proximo_contato && chave !== "integrado" ? (j.atrasado ? "⚠ contato atrasado (" + data(j.proximo_contato) + ")" : "Próximo contato: " + data(j.proximo_contato)) : null;
+        coluna.append(h("article", { class: "ig-pessoa" + (j.atrasado ? " atrasado" : ""), tabindex: 0, on: { click: () => editar(j), keydown: (e) => { if (e.key === "Enter") editar(j); } } },
+          h("div", { class: "ig-topo" }, h("span", { class: "avatar", text: iniciais(j.nome) }),
+            h("div", null, h("b", { text: j.nome }), h("div", { class: "suave", text: j.dias_desde_visita === null ? "" : j.dias_desde_visita === 0 ? "veio hoje" : `1ª visita há ${j.dias_desde_visita} dia(s)` }))),
+          h("div", { class: "ig-tags" },
+            j.quer_visita ? h("span", { class: "selo s-laranja", text: "quer visita" }) : null,
+            j.convidado_por ? h("span", { class: "selo s-azul", text: "convite: " + j.convidado_por }) : null,
+            j.responsavel_nome ? h("span", { class: "selo s-cinza", text: "👤 " + j.responsavel_nome }) : null),
+          prox ? h("div", { class: "ig-prox" + (j.atrasado ? " ruim" : ""), text: prox }) : null,
+          h("div", { class: "ig-acoes" },
+            botaoWhatsApp(j.whatsapp, msg),
+            pode("visitantes", "editar") ? h("button", { class: "btn pequeno", type: "button", text: "✓ Falei", title: "Registrar o contato", on: { click: (e) => { e.stopPropagation(); faleiCom(j); } } }) : null,
+            pode("visitantes", "editar") && chave !== "integrado" ? h("button", { class: "btn pequeno", type: "button", text: "Avançar →", on: { click: (e) => { e.stopPropagation(); avancar(j); } } }) : null)));
+      });
+      quadro.append(coluna);
+    });
+    el.append(quadro);
+  },
+});
+
+/* ================================================================ PEDIDOS DE ORAÇÃO */
+registrarTela("prayers", {
+  titulo: "Pedidos de oração", sub: "Pedidos da igreja e do cartão do visitante, com cuidado e privacidade.", icone: "♡",
+  async render(el, { acoes }) {
+    const estado = App.oracaoFiltro || "";
+    const lista = await api("/api/igreja/oracoes" + (estado ? "?status=" + estado : ""));
+    const pastoral = pode("oracoes", "pastoral");
+    const editar = (o) => {
+      const form = h("div", { class: "formulario" },
+        campo("Pedido", areaTexto("pedido", o ? o.pedido : "", { rows: 4, placeholder: "Pelo que vamos orar?" }), null, true),
+        campo("Nome", entrada("nome", o && !o.anonimo ? o.nome : "")),
+        campo("WhatsApp", entrada("telefone", o ? o.telefone || "" : "", { inputmode: "tel" })),
+        campo("Categoria", seletor("categoria", CATEGORIAS_ORACAO.map(([v, t]) => [v, t]), o ? o.categoria : "outro")),
+        campo("Quem pode ver", seletor("privacidade", [["equipe", "Equipe de intercessão"], ["pastoral", "Só a liderança (confidencial)"]], o ? o.privacidade : "equipe")),
+        o ? campo("Situação", seletor("status", [["aberto", "Aberto"], ["orando", "Orando"], ["respondido", "Respondido 🙌"], ["arquivado", "Arquivado"]], o.status)) : null,
+        h("div", { class: "campo" }, marcador("anonimo", o ? o.anonimo : false, "Pedido anônimo")),
+        h("div", { class: "campo" }, marcador("quer_contato", o ? o.quer_contato : false, "A pessoa quer conversar com alguém")),
+        o ? campo("Testemunho (quando for respondido)", areaTexto("testemunho", o.testemunho || "", { rows: 3 }), null, true) : null);
+      modal({ titulo: o ? "Pedido de oração" : "Novo pedido de oração", conteudo: form, larga: true,
+        acoes: [{ texto: "Cancelar" }, { texto: "Salvar", classe: "primario", acao: async () => {
+          const r = await api(o ? "/api/igreja/oracoes/" + o.id : "/api/igreja/oracoes", { metodo: o ? "PUT" : "POST", dados: lerFormulario(form) });
+          toast(r && r.registrado ? "Pedido confidencial registrado para a liderança." : "Pedido salvo."); mostrarTela();
+        } }] });
+    };
+    const respondido = (o) => {
+      const form = h("div", { class: "formulario" }, campo("Testemunho", areaTexto("testemunho", o.testemunho || "", { rows: 4, placeholder: "Como Deus respondeu?" }), null, true));
+      modal({ titulo: "Oração respondida 🙌", conteudo: form, acoes: [{ texto: "Cancelar" }, { texto: "Marcar como respondido", classe: "primario", acao: async () => {
+        await api("/api/igreja/oracoes/" + o.id, { metodo: "PUT", dados: { ...lerFormulario(form), status: "respondido" } }); toast("Glória a Deus! Testemunho registrado."); mostrarTela();
+      } }] });
+    };
+    if (pode("oracoes", "criar")) acoes.append(h("button", { class: "btn", type: "button", text: "▦ Cartão (QR)", on: { click: abrirCartaoVisitante } }),
+      h("button", { class: "btn primario", type: "button", text: "+ Novo pedido", on: { click: () => editar(null) } }));
+    const abas = h("div", { class: "abas ig-abas" });
+    [["", "Em oração"], ["respondido", "Testemunhos"], ["arquivado", "Arquivados"]].forEach(([v, t]) =>
+      abas.append(h("button", { type: "button", class: v === estado ? "ativo" : null, text: t, on: { click: () => { App.oracaoFiltro = v; mostrarTela(); } } })));
+    el.append(h("div", { class: "ig-barra" }, abas,
+      h("span", { class: "suave", text: pastoral ? "Você vê também os pedidos confidenciais (liderança)." : "Pedidos confidenciais ficam só com a liderança." })));
+    if (!lista.length) { el.append(h("div", { class: "cartao vazio", text: estado === "respondido" ? "Nenhum testemunho ainda." : "Nenhum pedido aqui. 🙏" })); return; }
+    const mural = h("div", { class: "ig-mural" });
+    lista.forEach((o) => {
+      const [, cat, ic] = nomeCategoria(o.categoria);
+      const orar = h("button", { class: "btn pequeno ig-orei", type: "button", text: `🙏 Orei • ${o.vezes_orado}`, on: { click: async (e) => {
+        e.stopPropagation(); e.target.disabled = true;
+        try { const n = await api("/api/igreja/oracoes/" + o.id + "/orei", { dados: {} }); e.target.textContent = `🙏 Orei • ${n.vezes_orado}`; e.target.classList.add("feito"); }
+        catch (er) { falha(er); e.target.disabled = false; }
+      } } });
+      mural.append(h("article", { class: "ig-oracao s-" + o.status, tabindex: 0, on: { click: () => editar(o) } },
+        h("div", { class: "ig-cab" }, h("span", { class: "ig-cat", text: ic + " " + cat }),
+          o.privacidade === "pastoral" ? h("span", { class: "selo s-vermelho", text: "🔒 confidencial" }) : null,
+          selo(o.status === "aberto" ? "novo" : o.status === "orando" ? "em_atendimento" : o.status === "respondido" ? "aprovado" : "inativo",
+            o.status === "aberto" ? "Novo" : o.status === "orando" ? "Orando" : o.status === "respondido" ? "Respondido" : "Arquivado")),
+        h("p", { class: "ig-pedido", text: o.pedido }),
+        o.testemunho ? h("blockquote", { class: "ig-testemunho", text: "“" + o.testemunho + "”" }) : null,
+        h("div", { class: "ig-rodape" },
+          h("div", { class: "suave", text: (o.anonimo ? "Anônimo" : o.nome) + " • " + relativo(o.criado_em) + (o.origem === "cartao" ? " • pelo cartão" : "") }),
+          h("div", { class: "ig-acoes" },
+            o.quer_contato && o.telefone ? botaoWhatsApp(o.telefone, `Olá, ${primeiroNome(o.nome)}! Aqui é da ${nomeIgreja()}. Recebemos o seu pedido de oração e estamos orando por você.`, "Falar") : null,
+            o.status !== "respondido" && o.status !== "arquivado" ? orar : null,
+            pode("oracoes", "editar") && o.status !== "respondido" ? h("button", { class: "btn pequeno", type: "button", text: "🙌 Respondido", on: { click: (e) => { e.stopPropagation(); respondido(o); } } }) : null))));
+    });
+    el.append(mural);
+  },
+});
+
+/* ================================================================ DASHBOARD: "Igreja hoje" */
+(function () {
+  const base = App.telas.dash;
+  if (!base || base.__igreja) return;
+  const renderOriginal = base.render;
+  base.__igreja = true;
+  base.render = async function (el, ctx) {
+    let r = null;
+    try { r = await api("/api/igreja/resumo"); } catch (_) { r = null; }
+    if (r) {
+      const total = r.etapas.reduce((s, e) => s + e.total, 0) || 1;
+      const funil = h("div", { class: "ig-funil" }, r.etapas.map((e, i) => h("div", { class: "ig-degrau", style: { "--p": Math.max(4, Math.round(100 * e.total / total)) + "%" }, title: e.nome },
+        h("span", { text: (ETAPAS_IGREJA[i] || [])[2] + " " + e.nome }), h("b", { text: String(e.total) }))));
+      const aniv = r.aniversariantes.length ? r.aniversariantes.map((a) => h("div", { class: "item" },
+        h("div", null, h("b", { text: a.nome }), h("div", { class: "suave", text: (a.dia === hojeIso() ? "🎉 Hoje" : data(a.dia)) + " • " + a.idade + " anos" })),
+        botaoWhatsApp(a.whatsapp, `Feliz aniversário, ${primeiroNome(a.nome)}! 🎉 A ${nomeIgreja()} celebra a sua vida. Deus te abençoe!`, "Parabéns")))
+        : h("div", { class: "vazio", text: "Nenhum aniversariante nos próximos 7 dias." });
+      el.append(h("div", { class: "cartao ig-hoje" },
+        h("div", { class: "linha-titulo" }, h("div", null, h("h2", { text: "⛪ Igreja hoje" }), h("span", { class: "suave", text: "Visitantes, consolidação, oração e aniversários" })),
+          h("div", { class: "ig-linha" }, h("button", { class: "btn", type: "button", text: "Visitantes", on: { click: () => navegar("guests") } }),
+            h("button", { class: "btn", type: "button", text: "Pedidos de oração", on: { click: () => navegar("prayers") } }))),
+        h("div", { class: "grade estatisticas" },
+          cartaoNumero("Visitantes (7 dias)", r.visitantes_semana, "pelo cartão ou pela equipe", "neutra"),
+          cartaoNumero("Sem retorno", r.sem_retorno, r.sem_retorno ? "precisam de contato" : "todos acompanhados 👍", r.sem_retorno ? "ruim" : "neutra"),
+          cartaoNumero("Pedidos em oração", r.oracoes_abertas, "abertos e em oração", "neutra"),
+          cartaoNumero("Testemunhos (30 dias)", r.testemunhos_mes, "orações respondidas 🙌", "neutra")),
+        h("div", { class: "grade colunas" },
+          h("div", null, h("h3", { text: "Jornada de consolidação" }), funil),
+          h("div", null, h("h3", { text: "Aniversariantes da semana" }), aniv))));
+    }
+    return renderOriginal.call(this, el, ctx);
+  };
+})();

@@ -1,0 +1,14 @@
+/* Central de Pesquisas no ALFA — temas claro / médio / escuro (padrão: claro, o visual original). */
+body[data-theme="medio"]{--bg:#1f2937;--text:#f1f5f9;--muted:#a7b4c8;--card:#273244;--border:#3b4860;--sidebar:#111827;--sidebar2:#0b1220}
+body[data-theme="escuro"]{--bg:#0b1220;--text:#e6edf7;--muted:#8fa0bc;--card:#111a2e;--border:#22304d;--sidebar:#050a14;--sidebar2:#0b1220}
+body[data-theme="medio"] .topbar,body[data-theme="escuro"] .topbar,
+body[data-theme="medio"] .login-card,body[data-theme="escuro"] .login-card{background:var(--card);color:var(--text);border-color:var(--border)}
+body[data-theme="medio"] .login,body[data-theme="escuro"] .login{background:var(--bg)}
+body[data-theme="medio"] .btn:not(.primary),body[data-theme="escuro"] .btn:not(.primary){background:var(--border);color:var(--text)}
+body[data-theme="medio"] input,body[data-theme="medio"] select,body[data-theme="medio"] textarea,
+body[data-theme="escuro"] input,body[data-theme="escuro"] select,body[data-theme="escuro"] textarea{background:var(--bg);color:var(--text);border-color:var(--border)}
+body[data-theme="medio"] .badge,body[data-theme="escuro"] .badge{background:rgba(37,99,235,.18);color:#93c5fd}
+body[data-theme="medio"] [style*="background:#fff"],body[data-theme="escuro"] [style*="background:#fff"],
+body[data-theme="medio"] [style*="background: #fff"],body[data-theme="escuro"] [style*="background: #fff"],
+body[data-theme="medio"] [style*="background:white"],body[data-theme="escuro"] [style*="background:white"]{background:var(--card)!important;color:var(--text)}
+.rmd-empresa-topo{font-size:12px;color:var(--muted);font-weight:700;letter-spacing:.04em;margin-left:auto;margin-right:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40vw}

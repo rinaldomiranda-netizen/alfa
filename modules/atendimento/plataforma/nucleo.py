@@ -1,0 +1,503 @@
+"""Núcleo da plataforma: empresas, configurações, usuários, login e auditoria."""
+from __future__ import annotations
+
+import json
+import re
+import unicodedata
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+
+from . import permissoes, seguranca
+from .db import Banco, agora, para_datahora
+
+TEMAS = ("alfa", "claro", "medio", "escuro", "contraste")
+NOMES_TEMAS = {
+    "alfa": "Padrão ALFA",
+    "claro": "Claro",
+    "medio": "Médio",
+    "escuro": "Escuro",
+    "contraste": "Alto contraste",
+}
+TIPOS_LOGO = ("data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,")
+TAMANHO_MAXIMO_LOGO = 400_000
+_COR = re.compile(r"^#[0-9a-fA-F]{6}$")
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class ErroNegocio(ValueError):
+    codigo_http = 400
+
+
+class NaoEncontrado(ErroNegocio):
+    codigo_http = 404
+
+
+class Conflito(ErroNegocio):
+    codigo_http = 409
+
+
+class NaoAutenticado(ErroNegocio):
+    codigo_http = 401
+
+
+class PrecisaCodigo(NaoAutenticado):
+    """Senha certa, mas a conta tem verificação em duas etapas: falta o código do celular."""
+
+
+@dataclass
+class Ator:
+    """Quem está fazendo a ação (sempre vem da sessão, nunca do navegador)."""
+
+    usuario_id: str
+    nome: str
+    email: str
+    perfil: str
+    empresa_id: str | None
+    contato_id: str | None = None
+    fila_id: str | None = None
+    trocar_senha: bool = False
+    extras: dict = field(default_factory=dict)
+
+    def exigir(self, recurso: str, acao: str = "ver") -> None:
+        if recurso in self.extras.get("recursos_off", ()):
+            raise permissoes.SemPermissao("Esta função está desligada para esta igreja. Fale com o responsável pelo sistema.")
+        permissoes.exigir(self.perfil, recurso, acao)
+
+    def pode(self, recurso: str, acao: str = "ver") -> bool:
+        return recurso not in self.extras.get("recursos_off", ()) and permissoes.pode(self.perfil, recurso, acao)
+
+    @property
+    def empresa(self) -> str:
+        if not self.empresa_id:
+            raise ErroNegocio("Escolha uma empresa primeiro (menu Empresas).")
+        return self.empresa_id
+
+
+def novo_id() -> str:
+    return uuid.uuid4().hex
+
+
+def _slug(texto: str) -> str:
+    texto = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode()
+    texto = re.sub(r"[^a-zA-Z0-9]+", "-", texto).strip("-").lower()
+    return texto or "empresa"
+
+
+def _texto(valor, campo: str, obrigatorio: bool = True, maximo: int = 200) -> str | None:
+    valor = (str(valor).strip() if valor is not None else "")
+    if not valor:
+        if obrigatorio:
+            raise ErroNegocio(f"Preencha o campo '{campo}'.")
+        return None
+    if len(valor) > maximo:
+        raise ErroNegocio(f"O campo '{campo}' passou do limite de {maximo} caracteres.")
+    return valor
+
+
+class NucleoMixin:
+    banco: Banco
+
+    # ------------------------------------------------------------------ auditoria
+    def auditar(self, ator: Ator | None, acao: str, alvo: str | None = None, detalhe=None, ip: str | None = None,
+                empresa_id: str | None = None) -> None:
+        self.banco.executar(
+            "INSERT INTO auditoria(id, empresa_id, usuario_id, acao, alvo, detalhe, ip, criado_em) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                novo_id(), empresa_id or (ator.empresa_id if ator else None), ator.usuario_id if ator else None,
+                acao, alvo, json.dumps(detalhe, ensure_ascii=False) if detalhe is not None else None, ip, agora(),
+            ),
+        )
+
+    def listar_auditoria(self, ator: Ator, limite: int = 200) -> list[dict]:
+        ator.exigir("seguranca", "auditoria")
+        if ator.perfil == "owner" and not ator.empresa_id:
+            sql, parametros = "SELECT a.*, u.nome AS usuario_nome FROM auditoria a LEFT JOIN usuarios u ON u.id=a.usuario_id ORDER BY a.criado_em DESC LIMIT ?", (limite,)
+        else:
+            sql = ("SELECT a.*, u.nome AS usuario_nome FROM auditoria a LEFT JOIN usuarios u ON u.id=a.usuario_id "
+                   "WHERE a.empresa_id=? ORDER BY a.criado_em DESC LIMIT ?")
+            parametros = (ator.empresa, limite)
+        return self.banco.todos(sql, parametros)
+
+    # ------------------------------------------------------------------ empresas
+    def criar_empresa(self, nome: str, plano: str = "essencial", demonstracao: bool = False,
+                      ator: Ator | None = None, slug: str | None = None) -> dict:
+        if ator is not None:
+            ator.exigir("empresas", "criar")
+        nome = _texto(nome, "nome da empresa", maximo=120)
+        if not self.banco.um("SELECT codigo FROM planos WHERE codigo=?", (plano,)):
+            raise ErroNegocio("Plano desconhecido.")
+        empresa_id = novo_id()
+        base = _slug(slug or nome)
+        with self.banco.transacao() as c:
+            candidato, n = base, 1
+            while c.execute("SELECT 1 FROM empresas WHERE slug=?", (candidato,)).fetchone():
+                n += 1
+                candidato = f"{base}-{n}"
+            c.execute(
+                "INSERT INTO empresas(id, nome, slug, plano, demonstracao, ativa, criada_em) VALUES (?,?,?,?,?,1,?)",
+                (empresa_id, nome, candidato, plano, 1 if demonstracao else 0, agora()),
+            )
+            c.execute("INSERT INTO config_empresa(empresa_id, atualizado_em) VALUES (?,?)", (empresa_id, agora()))
+            c.execute(
+                "INSERT INTO filas(id, empresa_id, nome, sla_minutos, ativa, criada_em) VALUES (?,?,?,?,1,?)",
+                (novo_id(), empresa_id, "Geral", 15, agora()),
+            )
+        self.auditar(ator, "empresa.criar", empresa_id, {"nome": nome, "plano": plano}, empresa_id=empresa_id)
+        return self.obter_empresa(empresa_id)
+
+    def obter_empresa(self, empresa_id: str) -> dict:
+        empresa = self.banco.um("SELECT * FROM empresas WHERE id=?", (empresa_id,))
+        if not empresa:
+            raise NaoEncontrado("Empresa não encontrada.")
+        return empresa
+
+    def empresa_por_slug(self, slug: str) -> dict | None:
+        return self.banco.um("SELECT * FROM empresas WHERE slug=? AND ativa=1", (slug or "",))
+
+    def listar_empresas(self, ator: Ator) -> list[dict]:
+        ator.exigir("empresas", "ver")
+        return self.banco.todos(
+            """SELECT e.*, p.nome AS plano_nome,
+                      (SELECT COUNT(*) FROM usuarios u WHERE u.empresa_id=e.id AND u.ativo=1) AS usuarios,
+                      (SELECT COUNT(*) FROM contatos c WHERE c.empresa_id=e.id) AS nomes
+               FROM empresas e JOIN planos p ON p.codigo=e.plano ORDER BY e.demonstracao, e.nome"""
+        )
+
+    def editar_empresa(self, ator: Ator, empresa_id: str, dados: dict) -> dict:
+        ator.exigir("empresas", "editar")
+        empresa = self.obter_empresa(empresa_id)
+        nome = _texto(dados.get("nome", empresa["nome"]), "nome", maximo=120)
+        ativa = 1 if dados.get("ativa", empresa["ativa"]) else 0
+        plano = dados.get("plano", empresa["plano"])
+        if not self.banco.um("SELECT codigo FROM planos WHERE codigo=?", (plano,)):
+            raise ErroNegocio("Plano desconhecido.")
+        self.banco.executar("UPDATE empresas SET nome=?, ativa=?, plano=? WHERE id=?", (nome, ativa, plano, empresa_id))
+        self.auditar(ator, "empresa.editar", empresa_id, {"nome": nome, "ativa": ativa, "plano": plano}, empresa_id=empresa_id)
+        return self.obter_empresa(empresa_id)
+
+    # ------------------------------------------------------------------ configuração
+    def obter_config(self, empresa_id: str) -> dict:
+        empresa = self.obter_empresa(empresa_id)
+        config = self.banco.um("SELECT * FROM config_empresa WHERE empresa_id=?", (empresa_id,)) or {}
+        config.update({
+            "empresa_nome": empresa["nome"], "empresa_slug": empresa["slug"], "plano": empresa["plano"],
+            "demonstracao": bool(empresa["demonstracao"]),
+        })
+        return config
+
+    def salvar_config(self, ator: Ator, dados: dict) -> dict:
+        ator.exigir("config", "editar")
+        empresa_id = ator.empresa
+        atual = self.obter_config(empresa_id)
+        tema = dados.get("tema", atual["tema"])
+        if tema not in TEMAS:
+            raise ErroNegocio("Tema desconhecido.")
+        cor = dados.get("cor_destaque", atual.get("cor_destaque")) or None
+        if cor and not _COR.match(cor):
+            raise ErroNegocio("Cor de destaque inválida (use o formato #RRGGBB).")
+        logo = dados.get("logo", atual.get("logo"))
+        if logo:
+            if not logo.startswith(TIPOS_LOGO):
+                raise ErroNegocio("O logo precisa ser uma imagem PNG, JPG ou WEBP.")
+            if len(logo) > TAMANHO_MAXIMO_LOGO:
+                raise ErroNegocio("O logo é muito grande. Use uma imagem de até 300 KB.")
+        fuso = _texto(dados.get("fuso", atual["fuso"]), "fuso horário", maximo=60)
+        try:
+            from zoneinfo import ZoneInfo
+
+            ZoneInfo(fuso)
+        except Exception:  # noqa: BLE001 - fuso inexistente ou base de fusos ausente
+            if fuso != atual["fuso"]:
+                raise ErroNegocio("Fuso horário desconhecido.") from None
+        valores = {
+            "nome_sistema": _texto(dados.get("nome_sistema", atual["nome_sistema"]), "nome do sistema", maximo=60),
+            "logo": logo or None,
+            "tema": tema,
+            "cor_destaque": cor,
+            "fuso": fuso,
+            "mensagem_inicial": _texto(dados.get("mensagem_inicial", atual["mensagem_inicial"]), "mensagem inicial", maximo=500),
+            "atribuicao_automatica": 1 if dados.get("atribuicao_automatica", atual["atribuicao_automatica"]) else 0,
+            "pedir_avaliacao": 1 if dados.get("pedir_avaliacao", atual["pedir_avaliacao"]) else 0,
+        }
+        nome_empresa = _texto(dados.get("empresa_nome", atual["empresa_nome"]), "nome da empresa", maximo=120)
+        with self.banco.transacao() as c:
+            c.execute(
+                """UPDATE config_empresa SET nome_sistema=:nome_sistema, logo=:logo, tema=:tema, cor_destaque=:cor_destaque,
+                   fuso=:fuso, mensagem_inicial=:mensagem_inicial, atribuicao_automatica=:atribuicao_automatica,
+                   pedir_avaliacao=:pedir_avaliacao, atualizado_em=:agora WHERE empresa_id=:empresa_id""",
+                {**valores, "agora": agora(), "empresa_id": empresa_id},
+            )
+            c.execute("UPDATE empresas SET nome=? WHERE id=?", (nome_empresa, empresa_id))
+        self.auditar(ator, "config.salvar", empresa_id, {k: v for k, v in valores.items() if k != "logo"})
+        return self.obter_config(empresa_id)
+
+    # ------------------------------------------------------------------ usuários
+    def existe_usuario(self) -> bool:
+        return bool(self.banco.um("SELECT 1 AS x FROM usuarios LIMIT 1"))
+
+    def _usuario(self, usuario_id: str) -> dict:
+        usuario = self.banco.um("SELECT * FROM usuarios WHERE id=?", (usuario_id,))
+        if not usuario:
+            raise NaoEncontrado("Usuário não encontrado.")
+        return usuario
+
+    @staticmethod
+    def _publico_usuario(u: dict) -> dict:
+        return {
+            k: u.get(k) for k in (
+                "id", "empresa_id", "nome", "email", "perfil", "fila_id", "contato_id", "presenca",
+                "ativo", "trocar_senha", "ultimo_acesso", "criado_em",
+            )
+        } | {"dois_fatores": bool(u.get("totp_ativo")), "perfil_nome": permissoes.NOMES_PERFIS.get(u.get("perfil"), u.get("perfil"))}
+
+    def criar_usuario(self, ator: Ator | None, nome: str, email: str, perfil: str, senha: str | None = None,
+                      fila_id: str | None = None, contato_id: str | None = None, empresa_id: str | None = None) -> tuple[dict, str | None]:
+        if perfil not in permissoes.PERFIS:
+            raise ErroNegocio("Perfil desconhecido.")
+        if ator is not None:
+            ator.exigir("usuarios", "criar")
+            if perfil not in permissoes.perfis_que_pode_criar(ator.perfil):
+                raise permissoes.SemPermissao("Você não pode criar usuários com esse perfil.")
+            empresa_id = ator.empresa
+        if perfil != "owner" and not empresa_id:
+            raise ErroNegocio("Usuário precisa pertencer a uma empresa.")
+        if perfil == "owner":
+            empresa_id = None
+        nome = _texto(nome, "nome", maximo=120)
+        email = (_texto(email, "e-mail", maximo=160) or "").lower()
+        if not _EMAIL.match(email):
+            raise ErroNegocio("E-mail inválido.")
+        if self.banco.um("SELECT 1 AS x FROM usuarios WHERE email=?", (email,)):
+            raise Conflito("Já existe um usuário com esse e-mail.")
+        if fila_id and not self.banco.um("SELECT 1 AS x FROM filas WHERE id=? AND empresa_id=?", (fila_id, empresa_id)):
+            raise ErroNegocio("Fila inválida.")
+        if perfil == "cliente":
+            if not contato_id or not self.banco.um("SELECT 1 AS x FROM contatos WHERE id=? AND empresa_id=?", (contato_id, empresa_id)):
+                raise ErroNegocio("Usuário cliente precisa estar ligado a um nome cadastrado.")
+        temporaria = None
+        if senha:
+            seguranca.validar_senha_nova(senha)
+        else:
+            senha = temporaria = seguranca.gerar_senha_temporaria()
+        salt = seguranca.gerar_salt()
+        usuario_id = novo_id()
+        self.banco.executar(
+            """INSERT INTO usuarios(id, empresa_id, nome, email, senha_hash, senha_salt, perfil, fila_id, contato_id,
+               trocar_senha, criado_em) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (usuario_id, empresa_id, nome, email, seguranca.hash_senha(senha, salt), salt, perfil, fila_id, contato_id,
+             1 if temporaria else 0, agora()),
+        )
+        self.auditar(ator, "usuario.criar", usuario_id, {"email": email, "perfil": perfil}, empresa_id=empresa_id)
+        return self._publico_usuario(self._usuario(usuario_id)), temporaria
+
+    def listar_usuarios(self, ator: Ator) -> list[dict]:
+        ator.exigir("usuarios", "ver")
+        linhas = self.banco.todos(
+            """SELECT u.*, f.nome AS fila_nome, c.nome AS contato_nome FROM usuarios u
+               LEFT JOIN filas f ON f.id=u.fila_id LEFT JOIN contatos c ON c.id=u.contato_id
+               WHERE u.empresa_id=? ORDER BY u.ativo DESC, u.nome""",
+            (ator.empresa,),
+        )
+        return [self._publico_usuario(u) | {"fila_nome": u["fila_nome"], "contato_nome": u["contato_nome"]} for u in linhas]
+
+    def editar_usuario(self, ator: Ator, usuario_id: str, dados: dict) -> dict:
+        ator.exigir("usuarios", "editar")
+        usuario = self._usuario(usuario_id)
+        if usuario["empresa_id"] != ator.empresa:
+            raise NaoEncontrado("Usuário não encontrado.")
+        perfil = dados.get("perfil", usuario["perfil"])
+        if perfil != usuario["perfil"] and perfil not in permissoes.perfis_que_pode_criar(ator.perfil):
+            raise permissoes.SemPermissao("Você não pode dar esse perfil.")
+        ativo = 1 if dados.get("ativo", usuario["ativo"]) else 0
+        if usuario_id == ator.usuario_id and (not ativo or perfil != usuario["perfil"]):
+            raise ErroNegocio("Você não pode desativar nem mudar o seu próprio perfil.")
+        fila_id = dados.get("fila_id", usuario["fila_id"]) or None
+        if fila_id and not self.banco.um("SELECT 1 AS x FROM filas WHERE id=? AND empresa_id=?", (fila_id, ator.empresa)):
+            raise ErroNegocio("Fila inválida.")
+        nome = _texto(dados.get("nome", usuario["nome"]), "nome", maximo=120)
+        with self.banco.transacao() as c:
+            c.execute("UPDATE usuarios SET nome=?, perfil=?, ativo=?, fila_id=? WHERE id=?", (nome, perfil, ativo, fila_id, usuario_id))
+            if not ativo:
+                c.execute("DELETE FROM sessoes WHERE usuario_id=?", (usuario_id,))
+        self.auditar(ator, "usuario.editar", usuario_id, {"perfil": perfil, "ativo": ativo})
+        return self._publico_usuario(self._usuario(usuario_id))
+
+    def redefinir_senha(self, ator: Ator, usuario_id: str) -> str:
+        ator.exigir("usuarios", "editar")
+        usuario = self._usuario(usuario_id)
+        if usuario["empresa_id"] != ator.empresa:
+            raise NaoEncontrado("Usuário não encontrado.")
+        temporaria = seguranca.gerar_senha_temporaria()
+        salt = seguranca.gerar_salt()
+        with self.banco.transacao() as c:
+            c.execute(
+                "UPDATE usuarios SET senha_hash=?, senha_salt=?, trocar_senha=1, tentativas_falhas=0, bloqueado_ate=NULL, "
+                "totp_segredo=NULL, totp_ativo=0, totp_ultimo=NULL WHERE id=?",
+                (seguranca.hash_senha(temporaria, salt), salt, usuario_id),
+            )
+            c.execute("DELETE FROM sessoes WHERE usuario_id=?", (usuario_id,))
+        self.auditar(ator, "usuario.redefinir_senha", usuario_id)
+        return temporaria
+
+    def alterar_senha(self, ator: Ator, senha_atual: str, senha_nova: str) -> None:
+        usuario = self._usuario(ator.usuario_id)
+        if not seguranca.conferir_senha(senha_atual or "", usuario["senha_salt"], usuario["senha_hash"]):
+            raise ErroNegocio("A senha atual está incorreta.")
+        seguranca.validar_senha_nova(senha_nova)
+        salt = seguranca.gerar_salt()
+        self.banco.executar(
+            "UPDATE usuarios SET senha_hash=?, senha_salt=?, trocar_senha=0 WHERE id=?",
+            (seguranca.hash_senha(senha_nova, salt), salt, ator.usuario_id),
+        )
+        self.auditar(ator, "usuario.alterar_senha", ator.usuario_id)
+
+    def definir_presenca(self, ator: Ator, presenca: str) -> None:
+        if presenca not in ("online", "ausente", "offline"):
+            raise ErroNegocio("Presença inválida.")
+        self.banco.executar("UPDATE usuarios SET presenca=? WHERE id=?", (presenca, ator.usuario_id))
+
+    # ------------------------------------------------------------------ login e sessões
+    def entrar(self, email: str, senha: str, ip: str | None = None, navegador: str | None = None,
+               codigo: str | None = None) -> tuple[str, Ator]:
+        email = (email or "").strip().lower()
+        usuario = self.banco.um("SELECT * FROM usuarios WHERE email=?", (email,))
+        mensagem_generica = "E-mail ou senha incorretos."
+        if not usuario or not usuario["ativo"]:
+            seguranca.hash_senha(senha or "", "00" * 16)  # mesmo tempo de resposta
+            self.auditar(None, "login.falha", email, {"motivo": "usuario"}, ip=ip)
+            raise NaoAutenticado(mensagem_generica)
+        bloqueio = para_datahora(usuario["bloqueado_ate"])
+        if bloqueio and bloqueio > datetime.now(timezone.utc):
+            restante = int((bloqueio - datetime.now(timezone.utc)).total_seconds()) + 1
+            raise NaoAutenticado(f"Muitas tentativas erradas. Tente de novo em {restante} segundos.")
+        if not seguranca.conferir_senha(senha or "", usuario["senha_salt"], usuario["senha_hash"]):
+            falhas = usuario["tentativas_falhas"] + 1
+            duracao = seguranca.duracao_bloqueio(falhas)
+            ate = (datetime.now(timezone.utc) + timedelta(seconds=duracao)).isoformat(timespec="seconds") if duracao else None
+            self.banco.executar("UPDATE usuarios SET tentativas_falhas=?, bloqueado_ate=? WHERE id=?", (falhas, ate, usuario["id"]))
+            self.auditar(None, "login.falha", usuario["id"], {"falhas": falhas}, ip=ip, empresa_id=usuario["empresa_id"])
+            raise NaoAutenticado(mensagem_generica)
+        if usuario["totp_ativo"]:
+            if not str(codigo or "").strip():
+                raise PrecisaCodigo("Digite o código de 6 números do aplicativo autenticador do seu celular.")
+            aceito = seguranca.conferir_totp(usuario["totp_segredo"], codigo, usuario["totp_ultimo"])
+            if aceito is None:
+                falhas = usuario["tentativas_falhas"] + 1
+                duracao = seguranca.duracao_bloqueio(falhas)
+                ate = (datetime.now(timezone.utc) + timedelta(seconds=duracao)).isoformat(timespec="seconds") if duracao else None
+                self.banco.executar("UPDATE usuarios SET tentativas_falhas=?, bloqueado_ate=? WHERE id=?", (falhas, ate, usuario["id"]))
+                self.auditar(None, "login.falha", usuario["id"], {"falhas": falhas, "motivo": "codigo"}, ip=ip, empresa_id=usuario["empresa_id"])
+                raise PrecisaCodigo("Código incorreto ou vencido. Use o código que está aparecendo agora no aplicativo.")
+            self.banco.executar("UPDATE usuarios SET totp_ultimo=? WHERE id=?", (aceito, usuario["id"]))
+        self.banco.executar("UPDATE usuarios SET tentativas_falhas=0, bloqueado_ate=NULL WHERE id=?", (usuario["id"],))
+        return self._abrir_sessao(usuario, usuario["empresa_id"], ip, navegador, "login")
+
+    # ------------------------------------------------------------------ verificação em duas etapas
+    def dois_fatores_ativo(self, usuario_id: str) -> bool:
+        return bool(self._usuario(usuario_id)["totp_ativo"])
+
+    def iniciar_dois_fatores(self, ator: Ator, emissor: str) -> dict:
+        usuario = self._usuario(ator.usuario_id)
+        if usuario["totp_ativo"]:
+            raise ErroNegocio("A verificação em duas etapas já está ligada.")
+        segredo = seguranca.gerar_segredo_totp()
+        self.banco.executar("UPDATE usuarios SET totp_segredo=?, totp_ultimo=NULL WHERE id=?", (segredo, ator.usuario_id))
+        return {"segredo": segredo, "endereco": seguranca.endereco_totp(segredo, usuario["email"], emissor)}
+
+    def ativar_dois_fatores(self, ator: Ator, codigo: str) -> None:
+        usuario = self._usuario(ator.usuario_id)
+        if usuario["totp_ativo"]:
+            raise ErroNegocio("A verificação em duas etapas já está ligada.")
+        if not usuario["totp_segredo"]:
+            raise ErroNegocio("Comece de novo: toque em Ligar verificação.")
+        aceito = seguranca.conferir_totp(usuario["totp_segredo"], codigo)
+        if aceito is None:
+            raise ErroNegocio("Código incorreto. Confira se o relógio do celular está certo e digite o código que aparece agora.")
+        self.banco.executar("UPDATE usuarios SET totp_ativo=1, totp_ultimo=? WHERE id=?", (aceito, ator.usuario_id))
+        self.auditar(ator, "usuario.dois_fatores.ligar", ator.usuario_id)
+
+    def desativar_dois_fatores(self, ator: Ator, senha: str) -> None:
+        usuario = self._usuario(ator.usuario_id)
+        if not seguranca.conferir_senha(senha or "", usuario["senha_salt"], usuario["senha_hash"]):
+            raise ErroNegocio("Senha incorreta.")
+        self.banco.executar("UPDATE usuarios SET totp_segredo=NULL, totp_ativo=0, totp_ultimo=NULL WHERE id=?", (ator.usuario_id,))
+        self.auditar(ator, "usuario.dois_fatores.desligar", ator.usuario_id)
+
+    def entrar_com_token_unico(self, token: str, ip: str | None = None, navegador: str | None = None) -> tuple[str, Ator]:
+        registro = seguranca.consumir_token_unico(token or "")
+        if not registro:
+            raise NaoAutenticado("Link de acesso expirado. Abra o módulo de novo pelo ALFA.")
+        usuario = self._usuario(registro[0])
+        if not usuario["ativo"]:
+            raise NaoAutenticado("Usuário desativado.")
+        return self._abrir_sessao(usuario, registro[1] or usuario["empresa_id"], ip, navegador, "login.alfa")
+
+    def _abrir_sessao(self, usuario: dict, empresa_id: str | None, ip, navegador, acao: str) -> tuple[str, Ator]:
+        token = seguranca.novo_token()
+        with self.banco.transacao() as c:
+            c.execute("DELETE FROM sessoes WHERE expira_em < ?", (agora(),))
+            c.execute(
+                "INSERT INTO sessoes(token_hash, usuario_id, empresa_id, criada_em, expira_em, ip, navegador) VALUES (?,?,?,?,?,?,?)",
+                (seguranca.hash_token(token), usuario["id"], empresa_id, agora(), seguranca.expiracao_sessao(), ip, (navegador or "")[:200]),
+            )
+            c.execute("UPDATE usuarios SET ultimo_acesso=?, presenca=CASE WHEN presenca='offline' THEN 'online' ELSE presenca END WHERE id=?",
+                      (agora(), usuario["id"]))
+        ator = self._ator(usuario, empresa_id)
+        self.auditar(ator, acao, usuario["id"], ip=ip)
+        return token, ator
+
+    def _ator(self, usuario: dict, empresa_id: str | None) -> Ator:
+        empresa = empresa_id if usuario["perfil"] == "owner" else usuario["empresa_id"]
+        desligados = self.recursos_desligados(empresa) if hasattr(self, "recursos_desligados") else set()
+        return Ator(
+            usuario_id=usuario["id"], nome=usuario["nome"], email=usuario["email"], perfil=usuario["perfil"],
+            empresa_id=empresa,
+            contato_id=usuario["contato_id"], fila_id=usuario["fila_id"], trocar_senha=bool(usuario["trocar_senha"]),
+            extras={"recursos_off": desligados} if desligados else {},
+        )
+
+    def sessao(self, token: str | None) -> Ator | None:
+        if not token:
+            return None
+        linha = self.banco.um(
+            "SELECT s.empresa_id AS sessao_empresa, s.expira_em, u.* FROM sessoes s JOIN usuarios u ON u.id=s.usuario_id WHERE s.token_hash=?",
+            (seguranca.hash_token(token),),
+        )
+        if not linha or not linha["ativo"] or linha["expira_em"] < agora():
+            return None
+        if linha["empresa_id"]:
+            empresa = self.banco.um("SELECT ativa FROM empresas WHERE id=?", (linha["empresa_id"],))
+            if not empresa or not empresa["ativa"]:
+                return None
+        return self._ator(linha, linha["sessao_empresa"])
+
+    def sair(self, token: str) -> None:
+        self.banco.executar("DELETE FROM sessoes WHERE token_hash=?", (seguranca.hash_token(token or ""),))
+
+    def escolher_empresa(self, ator: Ator, token: str, empresa_id: str | None) -> Ator:
+        ator.exigir("empresas", "ver")
+        if empresa_id:
+            self.obter_empresa(empresa_id)
+        self.banco.executar("UPDATE sessoes SET empresa_id=? WHERE token_hash=?", (empresa_id, seguranca.hash_token(token)))
+        self.auditar(ator, "empresa.escolher", empresa_id, empresa_id=empresa_id)
+        return self.sessao(token)
+
+    def minhas_sessoes(self, ator: Ator, token_atual: str) -> list[dict]:
+        atual = seguranca.hash_token(token_atual)
+        linhas = self.banco.todos(
+            "SELECT token_hash, criada_em, expira_em, ip, navegador FROM sessoes WHERE usuario_id=? ORDER BY criada_em DESC",
+            (ator.usuario_id,),
+        )
+        return [
+            {"id": linha["token_hash"][:16], "atual": linha["token_hash"] == atual, **{k: linha[k] for k in ("criada_em", "expira_em", "ip", "navegador")}}
+            for linha in linhas
+        ]
+
+    def encerrar_sessao(self, ator: Ator, sessao_id: str) -> None:
+        if not sessao_id or len(sessao_id) < 16:
+            raise ErroNegocio("Sessão inválida.")
+        self.banco.executar(
+            "DELETE FROM sessoes WHERE usuario_id=? AND substr(token_hash,1,16)=?", (ator.usuario_id, sessao_id[:16])
+        )
+        self.auditar(ator, "sessao.encerrar", sessao_id[:16])

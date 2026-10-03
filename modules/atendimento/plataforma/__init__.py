@@ -1,0 +1,31 @@
+"""RMD Atendimento — plataforma completa (módulo oficial do ALFA).
+
+Usa só a biblioteca padrão do Python (roda dentro do ALFA ou separado).
+Ponto de entrada: ``Plataforma``.
+"""
+from __future__ import annotations
+
+from .canais import CanaisMixin, http_padrao
+from .comercial import ComercialMixin
+from .conversas import ConversasMixin
+from .db import Banco
+from .fluxos import FluxosMixin
+from .gestao import GestaoMixin
+from .igreja import IgrejaMixin
+from .nucleo import Ator, Conflito, ErroNegocio, NaoAutenticado, NaoEncontrado, NucleoMixin
+from .permissoes import SemPermissao
+from .sistema import SistemaMixin
+
+VERSAO = "5.2.0"
+
+
+class Plataforma(NucleoMixin, ConversasMixin, FluxosMixin, ComercialMixin, CanaisMixin, GestaoMixin, IgrejaMixin, SistemaMixin):
+    def __init__(self, caminho_banco=None, http=None, pasta_backups=None):
+        self.banco = Banco(caminho_banco)
+        self.http = http or http_padrao
+        self.pasta_backups = pasta_backups
+
+
+__all__ = [
+    "Plataforma", "Ator", "ErroNegocio", "NaoEncontrado", "Conflito", "NaoAutenticado", "SemPermissao", "VERSAO",
+]

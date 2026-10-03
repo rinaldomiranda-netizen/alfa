@@ -1,0 +1,86 @@
+/* RMD Atendimento Church — visual das telas da igreja (usa as mesmas variáveis de tema). */
+.ig-linha { display:flex; gap:8px; flex-wrap:wrap; align-items:center }
+.ig-estat { margin-bottom:16px }
+.ig-whats { background:color-mix(in srgb, #25d366 18%, transparent); border-color:color-mix(in srgb, #25d366 55%, var(--borda)); text-decoration:none }
+.ig-whats:hover { background:color-mix(in srgb, #25d366 30%, transparent) }
+
+/* quadro da consolidação (colunas; no celular viram uma lista vertical) */
+.ig-quadro { display:grid; grid-template-columns:repeat(5,minmax(200px,1fr)); gap:12px; align-items:start; overflow-x:auto; padding-bottom:6px }
+.ig-coluna { background:var(--painel); border:1px solid var(--borda); border-radius:16px; padding:10px; min-height:140px }
+.ig-coluna header { display:flex; align-items:center; gap:8px; padding:4px 4px 10px }
+.ig-coluna header b { flex:1 }
+.ig-ic { font-size:18px }
+.ig-conta { background:var(--superficie); border:1px solid var(--borda); border-radius:999px; padding:1px 9px; font-size:12px; color:var(--suave) }
+.ig-vazio { color:var(--suave); font-size:12px; padding:8px; text-align:center; border:1px dashed var(--borda); border-radius:12px }
+.ig-pessoa { background:var(--cartao); border:1px solid var(--borda); border-radius:14px; padding:11px; margin:8px 0; cursor:pointer; transition:transform .12s ease, border-color .12s ease, box-shadow .12s ease }
+.ig-pessoa:hover, .ig-pessoa:focus-visible { border-color:var(--primaria); transform:translateY(-1px); box-shadow:var(--sombra) }
+.ig-pessoa.atrasado { border-color:color-mix(in srgb, var(--erro) 70%, var(--borda)); box-shadow:inset 3px 0 0 var(--erro) }
+.ig-topo { display:flex; gap:10px; align-items:center }
+.ig-topo .avatar { width:34px; height:34px; border-radius:50%; display:grid; place-items:center; background:color-mix(in srgb, var(--primaria) 22%, transparent); color:var(--texto); font-weight:700; font-size:12px; flex:none }
+.ig-tags { display:flex; flex-wrap:wrap; gap:4px; margin:8px 0 0 }
+.ig-prox { font-size:12px; color:var(--suave); margin-top:8px }
+.ig-prox.ruim { color:var(--erro); font-weight:600 }
+.ig-acoes { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px }
+.ig-acoes .btn { padding:4px 9px; font-size:12px }
+
+/* pedidos de oração */
+.ig-barra { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px }
+.ig-abas button { padding:6px 14px; font-size:13px }
+.ig-mural { display:grid; grid-template-columns:repeat(auto-fill,minmax(290px,1fr)); gap:14px }
+.ig-oracao { background:var(--cartao); border:1px solid var(--borda); border-radius:16px; padding:14px; cursor:pointer; display:flex; flex-direction:column; gap:8px; transition:border-color .12s ease, transform .12s ease }
+.ig-oracao:hover { border-color:var(--primaria); transform:translateY(-1px) }
+.ig-oracao.s-respondido { background:linear-gradient(160deg, color-mix(in srgb, var(--sucesso) 12%, var(--cartao)), var(--cartao)) }
+.ig-cab { display:flex; gap:6px; align-items:center; flex-wrap:wrap }
+.ig-cat { font-weight:600; font-size:12px; background:var(--superficie); border:1px solid var(--borda); border-radius:999px; padding:2px 9px; margin-right:auto }
+.ig-pedido { margin:0; font-size:15px; line-height:1.5; white-space:pre-wrap }
+.ig-testemunho { margin:0; padding:8px 12px; border-left:3px solid var(--sucesso); color:var(--texto); font-style:italic; background:color-mix(in srgb, var(--sucesso) 8%, transparent); border-radius:0 10px 10px 0 }
+.ig-rodape { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-top:auto }
+.ig-orei.feito { background:color-mix(in srgb, var(--primaria) 22%, transparent); border-color:var(--primaria) }
+
+/* dashboard */
+.ig-hoje { margin-bottom:16px; background:linear-gradient(135deg, color-mix(in srgb, var(--primaria) 10%, var(--cartao)) 0%, var(--cartao) 60%) }
+.ig-hoje h3 { margin:14px 0 8px; font-size:14px }
+.ig-funil { display:flex; flex-direction:column; gap:6px }
+.ig-degrau { position:relative; display:flex; justify-content:space-between; align-items:center; padding:8px 12px; border-radius:10px; border:1px solid var(--borda); overflow:hidden; background:var(--superficie) }
+.ig-degrau::before { content:""; position:absolute; inset:0 auto 0 0; width:var(--p); background:color-mix(in srgb, var(--primaria) 22%, transparent); transition:width .4s ease }
+.ig-degrau span, .ig-degrau b { position:relative }
+
+/* cartão do visitante */
+.ig-cartao { display:flex; flex-direction:column; gap:12px; align-items:stretch }
+.ig-qr { display:grid; place-items:center; min-height:200px }
+.ig-qr img { background:#fff; padding:10px; border-radius:14px; max-width:260px; width:100% }
+
+.ig-filtro { display:flex; gap:6px; align-items:center }
+.ig-filtro select { min-width:180px }
+.ig-unidades { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:10px }
+.ig-unid { display:flex; gap:10px; align-items:center; text-align:left; background:var(--superficie); border:1px solid var(--borda); border-radius:14px; padding:10px 12px; color:var(--texto); cursor:pointer; font:inherit }
+.ig-unid:hover { border-color:var(--primaria) }
+.ig-unid > div:nth-child(2) { flex:1; min-width:0 }
+.ig-unid-num { display:flex; flex-direction:column; align-items:flex-end; font-size:12px; gap:2px }
+.ig-unid-num .ruim, .ig-prox.ruim { color:var(--erro); font-weight:600 }
+
+/* organização */
+.ig-explica { margin-bottom:15px }
+.ig-niveis { display:flex; flex-direction:column; gap:6px; margin-bottom:8px }
+.ig-nivel { margin-left:calc(var(--n) * 22px); padding:7px 12px; border-radius:10px; border:1px solid var(--borda); background:color-mix(in srgb, var(--primaria) calc(22% - var(--n) * 5%), var(--superficie)); font-weight:600; font-size:13px; width:max-content; max-width:100% }
+.ig-arvore { display:flex; flex-direction:column; gap:8px }
+.ig-no { margin-left:calc(var(--nivel) * 26px); border:1px solid var(--borda); border-left:4px solid color-mix(in srgb, var(--primaria) calc(90% - var(--nivel) * 20%), var(--borda)); border-radius:14px; padding:10px 12px; background:var(--cartao) }
+.ig-grupo { margin:10px 0 2px; font-size:14px; color:var(--suave); text-transform:uppercase; letter-spacing:.04em }
+.ig-grupo:first-child { margin-top:0 }
+.ig-no.inativa { opacity:.6 }
+.ig-no-cab { display:flex; gap:10px; align-items:center; flex-wrap:wrap }
+.ig-no-ic { font-size:22px }
+.ig-no-nome { flex:1; min-width:160px }
+.ig-no-num { display:flex; gap:6px; flex-wrap:wrap }
+
+.ig-sis-igrejas { display:flex; flex-direction:column; gap:12px }
+.ig-sis-igreja.bloqueada { opacity:.75; border-color:color-mix(in srgb, var(--erro) 55%, var(--borda)) }
+.ig-sis-igreja h3 { margin:14px 0 8px; font-size:14px }
+.ig-sis-recursos { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:6px 14px; margin-bottom:10px }
+
+@media (max-width:900px) {
+  .ig-no { margin-left:calc(var(--nivel) * 12px) }
+  .ig-filtro { width:100% } .ig-filtro select { flex:1 }
+  .ig-quadro { grid-template-columns:1fr; overflow:visible }
+  .ig-mural { grid-template-columns:1fr }
+}

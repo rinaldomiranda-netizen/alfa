@@ -1,0 +1,21 @@
+{
+  "name": "Sobrou+ — Boa comida. Mais valor. Menos desperdício.",
+  "short_name": "Sobrou+",
+  "description": "Comida boa que sobrou nas lojas, com desconto, para retirar ou receber.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FFF9EF",
+  "theme_color": "#0A563A",
+  "lang": "pt-BR",
+  "icons": [
+    {"src": "static/img/icone-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "static/img/icone-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "static/img/icone-512-mascara.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ],
+  "shortcuts": [
+    {"name": "Painel da loja", "url": "./painel", "icons": [{"src": "static/img/icone-192.png", "sizes": "192x192"}]},
+    {"name": "Entregador", "url": "./entregador", "icons": [{"src": "static/img/icone-192.png", "sizes": "192x192"}]}
+  ]
+}

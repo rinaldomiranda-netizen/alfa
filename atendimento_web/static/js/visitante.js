@@ -1,0 +1,62 @@
+/* Cartão do visitante / pedido de oração (página pública, sem login). */
+"use strict";
+(function () {
+  const $ = (s) => document.querySelector(s);
+  const slug = new URLSearchParams(location.search).get("e") || "";
+  const unidade = new URLSearchParams(location.search).get("u") || "";
+  async function api(caminho, dados) {
+    const cfg = { method: dados ? "POST" : "GET", headers: { "X-RMD": "1" } };
+    if (dados) { cfg.headers["Content-Type"] = "application/json"; cfg.body = JSON.stringify(dados); }
+    const r = await fetch(caminho, cfg);
+    const corpo = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(corpo.erro || "Erro " + r.status);
+    return corpo;
+  }
+  function marca(e) {
+    document.documentElement.dataset.tema = e.tema || "alfa";
+    if (e.cor_destaque && e.tema !== "contraste") document.documentElement.style.setProperty("--primaria", e.cor_destaque);
+    const nome = e.empresa_nome || "Igreja";
+    $("#igreja").textContent = nome;
+    document.title = "Bem-vindo — " + nome;
+    const logo = $("#logo");
+    if (e.logo) { const img = document.createElement("img"); img.className = "logo"; img.src = e.logo; img.alt = "Logo"; logo.replaceWith(img); }
+    else logo.textContent = nome.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]).join("").toUpperCase();
+  }
+  function aba(qual) {
+    document.querySelectorAll("[data-aba]").forEach((b) => { const sim = b.dataset.aba === qual; b.classList.toggle("ativo", sim); b.setAttribute("aria-selected", String(sim)); });
+    $("#f-visitante").hidden = qual !== "visitante"; $("#f-oracao").hidden = qual !== "oracao"; $("#obrigado").hidden = true;
+    document.querySelector(".vis-abas").hidden = false;
+  }
+  function ler(form) {
+    const d = { tipo: form.dataset.tipo };
+    if (unidade) d.unidade = unidade;
+    form.querySelectorAll("input[name],select[name],textarea[name]").forEach((el) => { d[el.name] = el.type === "checkbox" ? el.checked : el.value.trim(); });
+    return d;
+  }
+  async function enviar(ev) {
+    ev.preventDefault();
+    const form = ev.currentTarget, erro = form.querySelector("[data-erro]"), botao = form.querySelector("button[type=submit]");
+    erro.textContent = "";
+    const d = ler(form);
+    if (d.tipo === "visitante" && (!d.nome || !d.telefone)) { erro.textContent = "Preencha seu nome e WhatsApp."; return; }
+    if (d.tipo === "oracao" && !d.pedido) { erro.textContent = "Escreva o seu pedido."; return; }
+    if (!d.consentimento) { erro.textContent = "Marque a autorização para enviar."; return; }
+    botao.disabled = true;
+    try {
+      const r = await api("/api/publico/" + encodeURIComponent(slug) + "/cartao", d);
+      form.reset(); form.hidden = true; document.querySelector(".vis-abas").hidden = true;
+      $("#obrigado-titulo").textContent = d.tipo === "oracao" ? "Pedido recebido 🙏" : "Seja muito bem-vindo! 👋";
+      $("#obrigado-texto").textContent = r.mensagem || "Obrigado!";
+      $("#obrigado").hidden = false;
+    } catch (e) { erro.textContent = e.message; }
+    finally { botao.disabled = false; }
+  }
+  document.querySelectorAll("[data-aba]").forEach((b) => b.addEventListener("click", () => aba(b.dataset.aba)));
+  document.querySelectorAll(".vis-form").forEach((f) => f.addEventListener("submit", enviar));
+  $("#de-novo").addEventListener("click", () => aba("visitante"));
+  if (new URLSearchParams(location.search).get("aba") === "oracao") aba("oracao");
+  if (!slug) { $("#igreja").textContent = "Link incompleto"; $("#principal").hidden = true; return; }
+  if (unidade) api("/api/publico/" + encodeURIComponent(slug) + "/unidade/" + encodeURIComponent(unidade))
+    .then((u) => { $("#sub").textContent = u.nome + " • Que alegria ter você aqui!"; }).catch(() => {});
+  api("/api/publico/" + encodeURIComponent(slug) + "/empresa").then(marca).catch(() => { $("#igreja").textContent = "Igreja não encontrada"; $("#principal").hidden = true; });
+})();

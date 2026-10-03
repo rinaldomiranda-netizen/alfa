@@ -1,0 +1,3 @@
+Coloque aqui a logomarca oficial aprovada com o nome logo.png
+(copia de SobrouPlus_Logo_Aprovada.png). O sistema mostra a logo automaticamente.
+Enquanto o arquivo nao existir, aparece o espaco "logo oficial pendente".

@@ -1,0 +1,27 @@
+body { font-family:"Segoe UI", Arial, sans-serif; color:#142a38; max-width:820px; margin:24px auto; padding:0 20px; font-size:14px }
+header { display:flex; gap:16px; align-items:center; border-bottom:3px solid #087f82; padding-bottom:14px; margin-bottom:18px }
+header .logo { width:72px; height:72px; object-fit:contain }
+header h1 { margin:0; font-size:22px }
+header p { margin:2px 0 0; color:#55717d }
+header .num { margin-left:auto; text-align:right; font-size:13px }
+h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:#55717d; margin:16px 0 6px }
+table { width:100%; border-collapse:collapse; margin-top:10px }
+th, td { padding:8px; border-bottom:1px solid #d7e6ea; text-align:left }
+th { font-size:11px; text-transform:uppercase; color:#55717d }
+.n { text-align:right }
+tfoot td { border:0 }
+tr.total td { font-size:17px; font-weight:800; border-top:2px solid #142a38 }
+.rodape { color:#55717d; font-size:12px; margin-top:24px }
+.acoes { text-align:center; margin-top:24px }
+.acoes button { background:#087f82; color:#fff; border:0; border-radius:10px; padding:10px 18px; font-size:14px; cursor:pointer }
+@media print { .acoes { display:none } body { margin:0 } }
+/* P-003 — impressão: acabamento limpo e consistente com o Atendimento. */
+@page { margin:14mm }
+body { background:#fff; line-height:1.45 }
+header { break-inside:avoid }
+table { break-inside:auto }
+tr { break-inside:avoid; break-after:auto }
+th { background:#f3f7f8 }
+.n { white-space:nowrap }
+.acoes { border-top:1px solid #d7e6ea; padding-top:14px }
+@media print { header { border-bottom-width:2px } th { background:#f3f7f8 !important; -webkit-print-color-adjust:exact; print-color-adjust:exact } }

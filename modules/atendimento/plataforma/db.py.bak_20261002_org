@@ -1,0 +1,494 @@
+"""Banco de dados do RMD Atendimento (SQLite, biblioteca padrão do Python).
+
+Por que SQLite: roda dentro do ALFA e também separado, sem instalar
+nada, guarda tudo num único arquivo local e aguenta vários acessos ao
+mesmo tempo (modo WAL). Todas as tabelas de negócio têm ``empresa_id``:
+os dados de uma empresa nunca aparecem para outra.
+
+Toda leitura/escrita passa por este módulo (``conectar``). Se um dia o
+RMD Atendimento for para a nuvem (ex.: Supabase/PostgreSQL), só esta
+camada e os serviços precisam trocar — as telas e a API continuam iguais.
+"""
+from __future__ import annotations
+
+import os
+import sqlite3
+import threading
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+RAIZ_ALFA = Path(__file__).resolve().parents[3]
+PASTA_DADOS_PADRAO = RAIZ_ALFA / "data" / "rmd_atendimento"
+
+
+def pasta_dados() -> Path:
+    return Path(os.getenv("RMD_ATENDIMENTO_DADOS", str(PASTA_DADOS_PADRAO)))
+
+
+def caminho_banco_padrao() -> Path:
+    return pasta_dados() / "atendimento.db"
+
+
+def agora() -> str:
+    """Data/hora atual em UTC, formato ISO (ex.: 2026-09-25T13:40:00+00:00)."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def para_datahora(texto: str | None) -> datetime | None:
+    if not texto:
+        return None
+    try:
+        valor = datetime.fromisoformat(texto)
+    except ValueError:
+        return None
+    if valor.tzinfo is None:
+        valor = valor.replace(tzinfo=timezone.utc)
+    return valor
+
+
+def somar_minutos(texto: str, minutos: int) -> str:
+    base = para_datahora(texto) or datetime.now(timezone.utc)
+    return (base + timedelta(minutes=minutos)).isoformat(timespec="seconds")
+
+
+ESQUEMA = [
+    # 1 — estrutura inicial completa
+    """
+    CREATE TABLE IF NOT EXISTS planos (
+        codigo TEXT PRIMARY KEY,
+        nome TEXT NOT NULL,
+        limite_nomes INTEGER NOT NULL,
+        limite_canais_whatsapp INTEGER NOT NULL,
+        limite_usuarios INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS empresas (
+        id TEXT PRIMARY KEY,
+        nome TEXT NOT NULL,
+        slug TEXT NOT NULL UNIQUE,
+        plano TEXT NOT NULL DEFAULT 'essencial' REFERENCES planos(codigo),
+        demonstracao INTEGER NOT NULL DEFAULT 0,
+        ativa INTEGER NOT NULL DEFAULT 1,
+        criada_em TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS config_empresa (
+        empresa_id TEXT PRIMARY KEY REFERENCES empresas(id),
+        nome_sistema TEXT NOT NULL DEFAULT 'RMD Atendimento',
+        logo TEXT,
+        tema TEXT NOT NULL DEFAULT 'alfa',
+        cor_destaque TEXT,
+        fuso TEXT NOT NULL DEFAULT 'America/Maceio',
+        mensagem_inicial TEXT NOT NULL DEFAULT 'Olá! Seja bem-vindo. Como podemos ajudar?',
+        atribuicao_automatica INTEGER NOT NULL DEFAULT 0,
+        pedir_avaliacao INTEGER NOT NULL DEFAULT 1,
+        atualizado_em TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS filas (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        nome TEXT NOT NULL,
+        sla_minutos INTEGER NOT NULL DEFAULT 15,
+        ativa INTEGER NOT NULL DEFAULT 1,
+        criada_em TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS usuarios (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT REFERENCES empresas(id),
+        nome TEXT NOT NULL,
+        email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        senha_hash TEXT NOT NULL,
+        senha_salt TEXT NOT NULL,
+        perfil TEXT NOT NULL,
+        fila_id TEXT REFERENCES filas(id),
+        contato_id TEXT,
+        presenca TEXT NOT NULL DEFAULT 'offline',
+        ativo INTEGER NOT NULL DEFAULT 1,
+        trocar_senha INTEGER NOT NULL DEFAULT 0,
+        tentativas_falhas INTEGER NOT NULL DEFAULT 0,
+        bloqueado_ate TEXT,
+        ultimo_acesso TEXT,
+        criado_em TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sessoes (
+        token_hash TEXT PRIMARY KEY,
+        usuario_id TEXT NOT NULL REFERENCES usuarios(id),
+        empresa_id TEXT,
+        criada_em TEXT NOT NULL,
+        expira_em TEXT NOT NULL,
+        ip TEXT,
+        navegador TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS contatos (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        nome TEXT NOT NULL,
+        telefone TEXT,
+        whatsapp TEXT,
+        email TEXT,
+        tags TEXT NOT NULL DEFAULT '[]',
+        observacoes TEXT,
+        status TEXT NOT NULL DEFAULT 'novo',
+        dados TEXT NOT NULL DEFAULT '{}',
+        ultimo_contato TEXT,
+        criado_em TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ix_contatos_empresa ON contatos(empresa_id, nome);
+    CREATE INDEX IF NOT EXISTS ix_contatos_whatsapp ON contatos(empresa_id, whatsapp);
+
+    CREATE TABLE IF NOT EXISTS conversas (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        numero INTEGER NOT NULL,
+        contato_id TEXT NOT NULL REFERENCES contatos(id),
+        canal TEXT NOT NULL,
+        canal_id TEXT,
+        status TEXT NOT NULL DEFAULT 'novo',
+        fila_id TEXT REFERENCES filas(id),
+        responsavel_id TEXT REFERENCES usuarios(id),
+        sla_vence_em TEXT,
+        primeira_resposta_em TEXT,
+        resolvida_em TEXT,
+        avaliacao INTEGER,
+        fluxo_estado TEXT,
+        token_publico TEXT,
+        criada_em TEXT NOT NULL,
+        atualizada_em TEXT NOT NULL,
+        UNIQUE (empresa_id, numero)
+    );
+    CREATE INDEX IF NOT EXISTS ix_conversas_status ON conversas(empresa_id, status);
+
+    CREATE TABLE IF NOT EXISTS mensagens (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        conversa_id TEXT NOT NULL REFERENCES conversas(id),
+        direcao TEXT NOT NULL,
+        autor_tipo TEXT NOT NULL,
+        autor_id TEXT,
+        texto TEXT NOT NULL,
+        tipo TEXT NOT NULL DEFAULT 'texto',
+        payload TEXT,
+        externo_id TEXT,
+        status_entrega TEXT,
+        erro TEXT,
+        criada_em TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ix_mensagens_conversa ON mensagens(conversa_id, criada_em);
+    CREATE INDEX IF NOT EXISTS ix_mensagens_externo ON mensagens(externo_id);
+
+    CREATE TABLE IF NOT EXISTS servicos (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        nome TEXT NOT NULL,
+        categoria TEXT,
+        descricao TEXT,
+        preco_centavos INTEGER NOT NULL DEFAULT 0,
+        sla_horas INTEGER,
+        ativo INTEGER NOT NULL DEFAULT 1,
+        criado_em TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS orcamentos (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        numero INTEGER NOT NULL,
+        contato_id TEXT NOT NULL REFERENCES contatos(id),
+        conversa_id TEXT REFERENCES conversas(id),
+        descricao TEXT,
+        validade TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'rascunho',
+        desconto_centavos INTEGER NOT NULL DEFAULT 0,
+        total_centavos INTEGER NOT NULL DEFAULT 0,
+        criado_por TEXT,
+        enviado_em TEXT,
+        decidido_em TEXT,
+        criado_em TEXT NOT NULL,
+        atualizado_em TEXT NOT NULL,
+        UNIQUE (empresa_id, numero)
+    );
+
+    CREATE TABLE IF NOT EXISTS orcamento_itens (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        orcamento_id TEXT NOT NULL REFERENCES orcamentos(id),
+        servico_id TEXT REFERENCES servicos(id),
+        descricao TEXT NOT NULL,
+        quantidade REAL NOT NULL,
+        valor_unit_centavos INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS fluxos (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        nome TEXT NOT NULL,
+        gatilho_tipo TEXT NOT NULL DEFAULT 'manual',
+        gatilho_valor TEXT,
+        etapas TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'rascunho',
+        simulado_ok INTEGER NOT NULL DEFAULT 0,
+        atualizado_em TEXT NOT NULL,
+        publicado_em TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS agenda (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        titulo TEXT NOT NULL,
+        inicio TEXT NOT NULL,
+        fim TEXT NOT NULL,
+        contato_id TEXT REFERENCES contatos(id),
+        fila_id TEXT REFERENCES filas(id),
+        responsavel_id TEXT REFERENCES usuarios(id),
+        observacao TEXT,
+        status TEXT NOT NULL DEFAULT 'agendado',
+        lembrete_minutos INTEGER NOT NULL DEFAULT 60,
+        lembrete_enviado INTEGER NOT NULL DEFAULT 0,
+        criado_em TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS whatsapp_canais (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        nome TEXT NOT NULL,
+        numero_exibicao TEXT,
+        phone_number_id TEXT NOT NULL UNIQUE,
+        waba_id TEXT,
+        access_token TEXT NOT NULL,
+        app_secret TEXT,
+        verify_token TEXT NOT NULL,
+        versao_api TEXT NOT NULL DEFAULT 'v21.0',
+        ativo INTEGER NOT NULL DEFAULT 1,
+        ultimo_evento_em TEXT,
+        criado_em TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS api_chaves (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        nome TEXT NOT NULL,
+        prefixo TEXT NOT NULL UNIQUE,
+        chave_hash TEXT NOT NULL,
+        escopos TEXT NOT NULL,
+        dry_run INTEGER NOT NULL DEFAULT 1,
+        ativa INTEGER NOT NULL DEFAULT 1,
+        ultimo_uso TEXT,
+        criada_em TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS webhooks (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        url TEXT NOT NULL,
+        eventos TEXT NOT NULL,
+        segredo TEXT,
+        ativo INTEGER NOT NULL DEFAULT 1,
+        criado_em TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS webhook_entregas (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        webhook_id TEXT NOT NULL REFERENCES webhooks(id),
+        evento TEXT NOT NULL,
+        ok INTEGER NOT NULL,
+        codigo_http INTEGER,
+        erro TEXT,
+        criada_em TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS alertas (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        chave TEXT NOT NULL,
+        tipo TEXT NOT NULL,
+        nivel TEXT NOT NULL,
+        titulo TEXT NOT NULL,
+        texto TEXT NOT NULL,
+        referencia TEXT,
+        lido INTEGER NOT NULL DEFAULT 0,
+        criado_em TEXT NOT NULL,
+        UNIQUE (empresa_id, chave)
+    );
+
+    CREATE TABLE IF NOT EXISTS auditoria (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT,
+        usuario_id TEXT,
+        acao TEXT NOT NULL,
+        alvo TEXT,
+        detalhe TEXT,
+        ip TEXT,
+        criado_em TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ix_auditoria_empresa ON auditoria(empresa_id, criado_em);
+
+    CREATE TABLE IF NOT EXISTS backups (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        arquivo TEXT NOT NULL,
+        tipo TEXT NOT NULL,
+        tamanho INTEGER NOT NULL,
+        criado_em TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS contadores (
+        empresa_id TEXT NOT NULL,
+        nome TEXT NOT NULL,
+        valor INTEGER NOT NULL,
+        PRIMARY KEY (empresa_id, nome)
+    );
+    """,
+    # 2026-09-28: verificação em duas etapas (código do celular no login)
+    """
+    ALTER TABLE usuarios ADD COLUMN totp_segredo TEXT;
+    ALTER TABLE usuarios ADD COLUMN totp_ativo INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE usuarios ADD COLUMN totp_ultimo INTEGER;
+    """,
+    # 2026-10-02: RMD Atendimento Church — consolidação de visitantes e pedidos de oração
+    """
+    CREATE TABLE IF NOT EXISTS igreja_jornada (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        contato_id TEXT NOT NULL REFERENCES contatos(id),
+        etapa TEXT NOT NULL DEFAULT 'novo',
+        primeira_visita TEXT,
+        como_conheceu TEXT,
+        convidado_por TEXT,
+        quer_visita INTEGER NOT NULL DEFAULT 0,
+        proximo_contato TEXT,
+        responsavel_id TEXT REFERENCES usuarios(id),
+        observacao TEXT,
+        criado_em TEXT NOT NULL,
+        atualizado_em TEXT NOT NULL,
+        UNIQUE (empresa_id, contato_id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_jornada_empresa ON igreja_jornada(empresa_id, etapa, proximo_contato);
+
+    CREATE TABLE IF NOT EXISTS igreja_oracoes (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        contato_id TEXT REFERENCES contatos(id),
+        nome TEXT NOT NULL,
+        telefone TEXT,
+        pedido TEXT NOT NULL,
+        categoria TEXT NOT NULL DEFAULT 'outro',
+        privacidade TEXT NOT NULL DEFAULT 'equipe',
+        status TEXT NOT NULL DEFAULT 'aberto',
+        anonimo INTEGER NOT NULL DEFAULT 0,
+        quer_contato INTEGER NOT NULL DEFAULT 0,
+        testemunho TEXT,
+        vezes_orado INTEGER NOT NULL DEFAULT 0,
+        origem TEXT NOT NULL DEFAULT 'equipe',
+        respondido_em TEXT,
+        criado_em TEXT NOT NULL,
+        atualizado_em TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ix_oracoes_empresa ON igreja_oracoes(empresa_id, status, criado_em);
+    """,
+]
+
+PLANOS_PADRAO = (
+    ("essencial", "Essencial", 1000, 1, 3),
+    ("business", "Business", 10000, 3, 15),
+    ("enterprise", "Enterprise", 100000, 10, 100),
+)
+
+_LOCK_MIGRACAO = threading.Lock()
+_MIGRADOS: set[str] = set()
+
+
+def _abrir(caminho: Path) -> sqlite3.Connection:
+    conexao = sqlite3.connect(str(caminho), timeout=15, isolation_level=None, check_same_thread=False)
+    conexao.row_factory = sqlite3.Row
+    conexao.execute("PRAGMA foreign_keys = ON")
+    conexao.execute("PRAGMA busy_timeout = 15000")
+    return conexao
+
+
+def preparar(caminho: Path | str | None = None) -> Path:
+    """Cria a pasta, o arquivo e as tabelas (uma vez por processo)."""
+    caminho = Path(caminho) if caminho else caminho_banco_padrao()
+    chave = str(caminho.resolve())
+    with _LOCK_MIGRACAO:
+        if chave in _MIGRADOS and caminho.exists():
+            return caminho
+        caminho.parent.mkdir(parents=True, exist_ok=True)
+        conexao = _abrir(caminho)
+        try:
+            conexao.execute("PRAGMA journal_mode = WAL")
+            conexao.execute("CREATE TABLE IF NOT EXISTS versao_esquema (versao INTEGER NOT NULL)")
+            linha = conexao.execute("SELECT MAX(versao) AS v FROM versao_esquema").fetchone()
+            atual = linha["v"] or 0
+            for numero, sql in enumerate(ESQUEMA, start=1):
+                if numero > atual:
+                    conexao.executescript("BEGIN;" + sql + f"; INSERT INTO versao_esquema(versao) VALUES ({numero}); COMMIT;")
+            for plano in PLANOS_PADRAO:
+                conexao.execute(
+                    "INSERT OR IGNORE INTO planos(codigo, nome, limite_nomes, limite_canais_whatsapp, limite_usuarios) VALUES (?,?,?,?,?)",
+                    plano,
+                )
+        finally:
+            conexao.close()
+        _MIGRADOS.add(chave)
+    return caminho
+
+
+class Banco:
+    """Acesso ao arquivo do banco. Uma conexão curta por operação —
+    seguro com várias telas/usuários ao mesmo tempo."""
+
+    def __init__(self, caminho: Path | str | None = None):
+        self.caminho = preparar(caminho)
+
+    @contextmanager
+    def conexao(self):
+        conexao = _abrir(self.caminho)
+        try:
+            yield conexao
+        finally:
+            conexao.close()
+
+    @contextmanager
+    def transacao(self):
+        conexao = _abrir(self.caminho)
+        try:
+            conexao.execute("BEGIN IMMEDIATE")
+            yield conexao
+            conexao.execute("COMMIT")
+        except BaseException:
+            conexao.execute("ROLLBACK")
+            raise
+        finally:
+            conexao.close()
+
+    def um(self, sql: str, parametros=()) -> dict | None:
+        with self.conexao() as c:
+            linha = c.execute(sql, parametros).fetchone()
+            return dict(linha) if linha else None
+
+    def todos(self, sql: str, parametros=()) -> list[dict]:
+        with self.conexao() as c:
+            return [dict(linha) for linha in c.execute(sql, parametros).fetchall()]
+
+    def executar(self, sql: str, parametros=()) -> int:
+        with self.transacao() as c:
+            return c.execute(sql, parametros).rowcount
+
+    def proximo_numero(self, conexao: sqlite3.Connection, empresa_id: str, nome: str, inicio: int) -> int:
+        """Numeração sequencial por empresa (ex.: atendimento #10001, ORC-1001).
+        Precisa ser chamado dentro de uma transação."""
+        linha = conexao.execute(
+            "SELECT valor FROM contadores WHERE empresa_id=? AND nome=?", (empresa_id, nome)
+        ).fetchone()
+        valor = (linha["valor"] + 1) if linha else inicio
+        conexao.execute(
+            "INSERT INTO contadores(empresa_id, nome, valor) VALUES (?,?,?) "
+            "ON CONFLICT(empresa_id, nome) DO UPDATE SET valor=excluded.valor",
+            (empresa_id, nome, valor),
+        )
+        return valor

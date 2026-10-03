@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="pt-BR" data-tema="alfa">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cartão do visitante</title>
+<link rel="icon" href="/static/img/icone.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="/static/css/visitante.css">
+</head>
+<body>
+<div class="vis">
+  <header class="vis-topo">
+    <div class="logo iniciais" id="logo">…</div>
+    <div><div class="vis-igreja" id="igreja">Carregando…</div><div class="vis-sub" id="sub">Que alegria ter você aqui!</div></div>
+  </header>
+  <main class="vis-cartao" id="principal">
+    <div class="vis-abas" role="tablist">
+      <button type="button" role="tab" class="ativo" data-aba="visitante" aria-selected="true">👋 Primeira vez aqui</button>
+      <button type="button" role="tab" data-aba="oracao" aria-selected="false">🙏 Pedido de oração</button>
+    </div>
+
+    <form id="f-visitante" class="formulario vis-form" data-tipo="visitante" novalidate>
+      <p class="suave inteiro">Deixe seu contato para a igreja te conhecer melhor. Leva 1 minuto.</p>
+      <div class="campo inteiro"><label for="v-nome">Seu nome *</label><input id="v-nome" name="nome" required maxlength="120" autocomplete="name"></div>
+      <div class="campo"><label for="v-tel">WhatsApp *</label><input id="v-tel" name="telefone" required inputmode="tel" autocomplete="tel" placeholder="(79) 99999-0000"></div>
+      <div class="campo"><label for="v-nasc">Aniversário</label><input id="v-nasc" name="nascimento" type="date"></div>
+      <div class="campo"><label for="v-bairro">Bairro</label><input id="v-bairro" name="bairro" maxlength="80"></div>
+      <div class="campo"><label for="v-como">Como conheceu a igreja?</label>
+        <select id="v-como" name="como_conheceu"><option value="">—</option><option value="convite">Convite de alguém</option><option value="redes_sociais">Redes sociais</option><option value="passando">Estava passando</option><option value="familia">Família</option><option value="evento">Evento da igreja</option><option value="outro">Outro</option></select></div>
+      <div class="campo inteiro"><label for="v-conv">Quem te convidou? (opcional)</label><input id="v-conv" name="convidado_por" maxlength="120"></div>
+      <label class="opcao-check inteiro"><input type="checkbox" name="quer_visita"> Gostaria de receber uma visita</label>
+      <div class="campo inteiro"><label for="v-ped">Quer deixar um pedido de oração? (opcional)</label><textarea id="v-ped" name="pedido" rows="3" maxlength="2000"></textarea></div>
+      <label class="opcao-check inteiro vis-lgpd"><input type="checkbox" name="consentimento" required> Autorizo a igreja a guardar meus dados e falar comigo pelo WhatsApp.</label>
+      <div class="inteiro"><button class="btn primario vis-enviar" type="submit">Enviar</button></div>
+      <div class="erro-texto inteiro" data-erro></div>
+    </form>
+
+    <form id="f-oracao" class="formulario vis-form" data-tipo="oracao" novalidate hidden>
+      <p class="suave inteiro">Conte pelo que podemos orar. A equipe de intercessão vai orar por você.</p>
+      <div class="campo inteiro"><label for="o-ped">Seu pedido *</label><textarea id="o-ped" name="pedido" rows="5" required maxlength="2000"></textarea></div>
+      <div class="campo"><label for="o-cat">Assunto</label>
+        <select id="o-cat" name="categoria"><option value="outro">Geral</option><option value="saude">Saúde</option><option value="familia">Família</option><option value="financeiro">Finanças</option><option value="trabalho">Trabalho</option><option value="espiritual">Vida espiritual</option><option value="gratidao">Gratidão</option></select></div>
+      <div class="campo"><label for="o-priv">Quem pode ver</label>
+        <select id="o-priv" name="privacidade"><option value="equipe">Equipe de intercessão</option><option value="pastoral">Só os pastores (confidencial)</option></select></div>
+      <div class="campo"><label for="o-nome">Seu nome</label><input id="o-nome" name="nome" maxlength="120" autocomplete="name"></div>
+      <div class="campo"><label for="o-tel">WhatsApp</label><input id="o-tel" name="telefone" inputmode="tel" autocomplete="tel"></div>
+      <label class="opcao-check"><input type="checkbox" name="anonimo"> Quero ficar anônimo</label>
+      <label class="opcao-check"><input type="checkbox" name="quer_contato"> Quero conversar com alguém</label>
+      <label class="opcao-check inteiro vis-lgpd"><input type="checkbox" name="consentimento" required> Autorizo a igreja a guardar este pedido.</label>
+      <div class="inteiro"><button class="btn primario vis-enviar" type="submit">Enviar pedido</button></div>
+      <div class="erro-texto inteiro" data-erro></div>
+    </form>
+
+    <section id="obrigado" class="vis-obrigado" hidden>
+      <div class="vis-icone">🙌</div>
+      <h2 id="obrigado-titulo">Obrigado!</h2>
+      <p id="obrigado-texto"></p>
+      <button class="btn" type="button" id="de-novo">Enviar outro</button>
+    </section>
+  </main>
+  <p class="vis-rodape">RMD Atendimento Church</p>
+</div>
+<div class="toasts" id="toasts"></div>
+<script src="/static/js/visitante.js"></script>
+</body>
+</html>

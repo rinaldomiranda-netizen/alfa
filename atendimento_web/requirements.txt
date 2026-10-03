@@ -1,0 +1,2 @@
+# Sem dependências externas: a plataforma usa só a biblioteca padrão do Python (3.11+).
+# A tela "Recepção por roteiro" usa as bibliotecas do ALFA (câmera/tela) quando roda dentro do ALFA.

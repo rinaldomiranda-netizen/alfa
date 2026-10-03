@@ -1,0 +1,87 @@
+/* RMD Atendimento — tela de celular e de tablet.
+   O sistema identifica sozinho o aparelho (js/dispositivo.js → html[data-dispositivo]) e estas regras arrumam a tela.
+   Também valem quando a pessoa escolhe o modo no menu do usuário. */
+
+/* ---------- Tablet: menu lateral vira gaveta (botão ☰), duas colunas, botões maiores para o dedo ---------- */
+[data-dispositivo="tablet"] .lateral { transform:translateX(-100%); transition:transform .2s; width:min(70vw,320px); box-shadow:var(--sombra) }
+[data-dispositivo="tablet"] .lateral.aberta { transform:none }
+[data-dispositivo="tablet"] .principal { margin-left:0 }
+[data-dispositivo="tablet"] .btn.botao-menu { display:inline-flex }
+[data-dispositivo="tablet"] .cabecalho .empresa-sub .so-largo { display:none }
+[data-dispositivo="tablet"] .cabecalho .empresa-nome { font-size:17px }
+[data-dispositivo="tablet"] .usuario-topo .texto-usuario { display:none }
+[data-dispositivo="tablet"] .conteudo { padding:18px }
+[data-dispositivo="tablet"] .estatisticas { grid-template-columns:repeat(3,minmax(0,1fr)) }
+[data-dispositivo="tablet"] .colunas, [data-dispositivo="tablet"] .duas { grid-template-columns:1fr }
+[data-dispositivo="tablet"] .tres { grid-template-columns:1fr 1fr }
+[data-dispositivo="tablet"] .temas { grid-template-columns:repeat(3,minmax(0,1fr)) }
+[data-dispositivo="tablet"] .central { grid-template-columns:280px minmax(0,1fr) }
+[data-dispositivo="tablet"] .info-conversa { display:none }
+[data-dispositivo="tablet"] .ig-quadro { grid-template-columns:repeat(2,minmax(0,1fr)); overflow:visible }
+[data-dispositivo="tablet"] .ig-mural { grid-template-columns:repeat(2,minmax(0,1fr)) }
+[data-dispositivo="tablet"] .ig-filtro select { min-width:0 }
+[data-dispositivo="tablet"] .nav button { min-height:44px }
+[data-dispositivo="tablet"] .btn { min-height:40px }
+
+/* ---------- Celular: tudo empilhado, tabelas viram cartões, menu em gaveta ---------- */
+[data-dispositivo="celular"] .lateral { transform:translateX(-100%); transition:transform .2s; width:min(86vw,300px); box-shadow:var(--sombra) }
+[data-dispositivo="celular"] .lateral.aberta { transform:none }
+[data-dispositivo="celular"] .principal { margin-left:0 }
+[data-dispositivo="celular"] .btn.botao-menu { display:inline-flex }
+[data-dispositivo="celular"] .cabecalho .texto-botao, [data-dispositivo="celular"] .cabecalho .empresa-sub .so-largo { display:none }
+[data-dispositivo="celular"] .cabecalho .empresa-nome { white-space:normal; line-height:1.15; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical }
+[data-dispositivo="celular"] .cabecalho .acoes-topo { gap:6px }
+[data-dispositivo="celular"] .cabecalho { padding:10px 12px; gap:10px }
+[data-dispositivo="celular"] .cabecalho .logo { width:38px; height:38px }
+[data-dispositivo="celular"] .cabecalho .empresa-nome { font-size:15px }
+[data-dispositivo="celular"] .usuario-topo .texto-usuario { display:none }
+[data-dispositivo="celular"] .conteudo { padding:13px }
+[data-dispositivo="celular"] .estatisticas { grid-template-columns:1fr 1fr }
+[data-dispositivo="celular"] .tres { grid-template-columns:1fr }
+[data-dispositivo="celular"] .temas { grid-template-columns:1fr 1fr }
+[data-dispositivo="celular"] .formulario { grid-template-columns:1fr }
+[data-dispositivo="celular"] .inteiro { grid-column:auto }
+[data-dispositivo="celular"] .busca input { min-width:0 }
+[data-dispositivo="celular"] .central { grid-template-columns:1fr; height:auto; min-height:0 }
+[data-dispositivo="celular"] .central.com-conversa .lista-conversas { display:none }
+[data-dispositivo="celular"] .central:not(.com-conversa) .painel-conversa { display:none }
+[data-dispositivo="celular"] .lista-conversas { max-height:none }
+[data-dispositivo="celular"] .mensagens { min-height:50vh }
+[data-dispositivo="celular"] .msg { max-width:88% }
+[data-dispositivo="celular"] .tabela thead { display:none }
+[data-dispositivo="celular"] .tabela, [data-dispositivo="celular"] .tabela tbody, [data-dispositivo="celular"] .tabela tr, [data-dispositivo="celular"] .tabela td { display:block; width:100% }
+[data-dispositivo="celular"] .tabela tr { border:1px solid var(--borda); border-radius:12px; margin:8px 0; padding:6px 10px; background:var(--superficie) }
+[data-dispositivo="celular"] .tabela td { border:0; padding:5px 0; display:flex; justify-content:space-between; gap:10px; text-align:right }
+[data-dispositivo="celular"] .tabela td::before { content:attr(data-rotulo); color:var(--suave); font-size:11px; text-align:left; font-weight:600 }
+[data-dispositivo="celular"] .tabela td.num { text-align:right }
+[data-dispositivo="celular"] .menu-usuario { right:10px; top:62px }
+[data-dispositivo="celular"] .ig-no { margin-left:calc(var(--nivel) * 12px) }
+[data-dispositivo="celular"] .ig-filtro { width:100% }
+[data-dispositivo="celular"] .ig-filtro select { flex:1 }
+[data-dispositivo="celular"] .ig-quadro { grid-template-columns:1fr; overflow:visible }
+[data-dispositivo="celular"] .ig-mural { grid-template-columns:1fr }
+[data-dispositivo="celular"] .nav button { min-height:44px }
+[data-dispositivo="celular"] .cabecalho .acoes-topo { min-width:0; flex-wrap:wrap; justify-content:flex-end }
+[data-dispositivo="celular"] .titulo-pagina h1 { font-size:21px }
+[data-dispositivo="celular"] .toasts { left:10px; right:10px; bottom:10px }
+[data-dispositivo="celular"] .toast { max-width:none }
+[data-dispositivo="celular"] .caixa-modal { padding:15px; max-height:94vh; border-radius:14px }
+[data-dispositivo="celular"] .modal { padding:8px; align-items:flex-end }
+[data-dispositivo="celular"] .menu-usuario { left:10px; right:10px; width:auto }
+
+/* Celular escolhido num computador: mostra a tela estreita no meio, como num celular */
+@media (min-width:741px) {
+  [data-dispositivo="celular"] body { background:color-mix(in srgb, var(--fundo) 80%, #000) }
+  [data-dispositivo="celular"] #raiz { max-width:430px; margin:0 auto; background:var(--fundo); min-height:100vh; box-shadow:0 0 0 1px var(--borda); position:relative; transform:translateZ(0) }
+  [data-dispositivo="celular"] .lateral { position:fixed }
+}
+/* Tablet escolhido num computador largo: limita a largura */
+@media (min-width:1181px) {
+  [data-dispositivo="tablet"] #raiz { max-width:1024px; margin:0 auto; box-shadow:0 0 0 1px var(--borda); min-height:100vh; transform:translateZ(0) }
+}
+
+/* Tela de abertura (enquanto carrega): marca + "Abrindo…" em vez de uma página vazia */
+.abrindo { display:grid; justify-items:center; gap:14px; text-align:center }
+.abrindo .icone-abrindo { width:58px; height:58px; border-radius:16px; background:var(--primaria); color:var(--primaria-texto); display:grid; place-items:center; font-weight:800; font-size:24px }
+.abrindo .girando { width:26px; height:26px; border-radius:50%; border:3px solid var(--linha); border-top-color:var(--primaria); animation:girar .8s linear infinite }
+@keyframes girar { to { transform:rotate(360deg) } }

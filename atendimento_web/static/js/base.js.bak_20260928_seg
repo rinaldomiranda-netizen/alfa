@@ -1,0 +1,374 @@
+/* RMD Atendimento — base da interface (sem bibliotecas externas).
+   Regra de segurança: nenhum texto vindo do servidor entra como HTML;
+   tudo é montado com h() e textContent. */
+"use strict";
+
+const App = { sessao: null, telas: {}, atual: null, intervalos: [], limpezaTela: null };
+
+/* ---------------------------------------------------------------- utilidades */
+function h(tag, atributos, ...filhos) {
+  const el = document.createElement(tag);
+  const a = atributos || {};
+  for (const [chave, valor] of Object.entries(a)) {
+    if (valor === null || valor === undefined || valor === false) continue;
+    if (chave === "class") el.className = valor;
+    else if (chave === "text") el.textContent = valor;
+    else if (chave === "on") for (const [ev, fn] of Object.entries(valor)) el.addEventListener(ev, fn);
+    else if (chave === "style" && typeof valor === "object") Object.assign(el.style, valor);
+    else if (chave === "dataset") Object.assign(el.dataset, valor);
+    else if (chave in el && typeof valor !== "string") el[chave] = valor;
+    else el.setAttribute(chave, valor === true ? "" : String(valor));
+  }
+  for (const f of filhos.flat(Infinity)) {
+    if (f === null || f === undefined || f === false) continue;
+    el.append(f instanceof Node ? f : document.createTextNode(String(f)));
+  }
+  return el;
+}
+const $ = (s, raiz = document) => raiz.querySelector(s);
+function limpar(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
+
+async function api(caminho, opcoes = {}) {
+  const metodo = opcoes.metodo || (opcoes.dados !== undefined ? "POST" : "GET");
+  const cfg = { method: metodo, headers: { "X-RMD": "1" }, credentials: "same-origin" };
+  if (opcoes.dados !== undefined) { cfg.headers["Content-Type"] = "application/json"; cfg.body = JSON.stringify(opcoes.dados); }
+  const r = await fetch(caminho, cfg);
+  let corpo = null;
+  try { corpo = await r.json(); } catch (_) { corpo = null; }
+  if (!r.ok) {
+    if (r.status === 401 && corpo && corpo.sessao === false && !opcoes.semRedirecionar) { App.sessao = null; iniciar(); }
+    if (r.status === 403 && corpo && corpo.trocar_senha) { App.sessao.usuario.trocar_senha = true; montarTrocaSenha(); }
+    const erro = new Error((corpo && corpo.erro) || `Erro ${r.status}`);
+    erro.status = r.status; erro.corpo = corpo;
+    throw erro;
+  }
+  return corpo;
+}
+
+function toast(texto, tipo = "ok") {
+  const t = h("div", { class: "toast" + (tipo === "erro" ? " erro" : ""), role: "status", text: texto });
+  $("#toasts").append(t);
+  setTimeout(() => t.remove(), tipo === "erro" ? 6500 : 3500);
+}
+function falha(erro) { toast(erro && erro.message ? erro.message : String(erro), "erro"); }
+
+function modal({ titulo, subtitulo, conteudo, acoes = [], larga = false, aoFechar }) {
+  const fundo = h("div", { class: "modal", role: "dialog", "aria-modal": "true" });
+  const fechar = () => { fundo.remove(); document.removeEventListener("keydown", esc); if (aoFechar) aoFechar(); };
+  const esc = (e) => { if (e.key === "Escape") fechar(); };
+  document.addEventListener("keydown", esc);
+  const botoes = acoes.map((a) => {
+    const b = h("button", { class: "btn " + (a.classe || ""), type: "button", text: a.texto });
+    b.addEventListener("click", async () => {
+      if (!a.acao) return fechar();
+      b.disabled = true;
+      try { const r = await a.acao(fechar); if (r !== false && a.fecha !== false) fechar(); }
+      catch (e) { falha(e); }
+      finally { b.disabled = false; }
+    });
+    return b;
+  });
+  const caixa = h("div", { class: "caixa-modal" + (larga ? " larga" : "") },
+    h("div", { class: "linha-titulo" }, h("div", null, h("h2", { text: titulo }), subtitulo ? h("div", { class: "suave", text: subtitulo }) : null),
+      h("button", { class: "btn pequeno", type: "button", "aria-label": "Fechar", text: "✕", on: { click: fechar } })),
+    conteudo, botoes.length ? h("div", { class: "rodape-modal" }, botoes) : null);
+  fundo.append(caixa);
+  fundo.addEventListener("mousedown", (e) => { if (e.target === fundo) fechar(); });
+  document.body.append(fundo);
+  const primeiro = caixa.querySelector("input,select,textarea");
+  if (primeiro) setTimeout(() => primeiro.focus(), 30);
+  return { fechar, caixa };
+}
+
+function confirmar(texto, botao = "Confirmar", classe = "primario") {
+  return new Promise((ok) => {
+    modal({ titulo: "Confirmar", conteudo: h("p", { text: texto }), aoFechar: () => ok(false),
+      acoes: [{ texto: "Cancelar" }, { texto: botao, classe, acao: (fechar) => { ok(true); fechar(); return false; } }] });
+  });
+}
+
+function mostrarSegredo(titulo, rotulo, valor, aviso) {
+  modal({ titulo, conteudo: h("div", null,
+    h("p", { class: "suave", text: aviso || "" }),
+    h("div", { class: "campo" }, h("label", { text: rotulo }), h("pre", { class: "mono", text: valor })),
+    h("button", { class: "btn", type: "button", text: "Copiar", on: { click: () => navigator.clipboard.writeText(valor).then(() => toast("Copiado.")) } })),
+    acoes: [{ texto: "Entendi", classe: "primario" }] });
+}
+
+/* campos de formulário */
+function campo(rotulo, entrada, ajuda, inteiro) {
+  return h("div", { class: "campo" + (inteiro ? " inteiro" : "") }, h("label", { text: rotulo }), entrada, ajuda ? h("div", { class: "ajuda", text: ajuda }) : null);
+}
+function entrada(nome, valor, extra = {}) { return h("input", { name: nome, value: valor ?? "", ...extra }); }
+function areaTexto(nome, valor, extra = {}) { const t = h("textarea", { name: nome, rows: 3, ...extra }); t.value = valor ?? ""; return t; }
+function seletor(nome, opcoes, valor, extra = {}) {
+  const s = h("select", { name: nome, ...extra }, opcoes.map(([v, t]) => h("option", { value: v, text: t })));
+  s.value = valor ?? (opcoes[0] ? opcoes[0][0] : "");
+  return s;
+}
+function marcador(nome, marcado, texto) {
+  return h("label", { class: "opcao-check" }, h("input", { type: "checkbox", name: nome, checked: !!marcado }), texto);
+}
+function lerFormulario(raiz) {
+  const dados = {};
+  raiz.querySelectorAll("input[name],select[name],textarea[name]").forEach((el) => {
+    if (el.type === "checkbox") dados[el.name] = el.checked;
+    else dados[el.name] = el.value;
+  });
+  return dados;
+}
+
+/* formatação */
+function fuso() { return (App.sessao && App.sessao.empresa && App.sessao.empresa.fuso) || "America/Maceio"; }
+function moeda(centavos) { return ((centavos || 0) / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }); }
+function dataHora(iso) { if (!iso) return "—"; try { return new Date(iso).toLocaleString("pt-BR", { timeZone: fuso(), day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }); } catch (_) { return iso; } }
+function data(iso) { if (!iso) return "—"; if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) { const [a, m, d] = iso.split("-"); return `${d}/${m}/${a}`; } try { return new Date(iso).toLocaleDateString("pt-BR", { timeZone: fuso() }); } catch (_) { return iso; } }
+function hora(iso) { try { return new Date(iso).toLocaleTimeString("pt-BR", { timeZone: fuso(), hour: "2-digit", minute: "2-digit" }); } catch (_) { return ""; } }
+function relativo(iso) {
+  if (!iso) return "—";
+  const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "agora"; if (s < 3600) return `há ${Math.floor(s / 60)} min`;
+  if (s < 86400) return `hoje, ${hora(iso)}`; return dataHora(iso);
+}
+function mmss(segundos) { if (segundos === null || segundos === undefined) return "—"; const neg = segundos < 0; const s = Math.abs(segundos); const t = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`; return neg ? `-${t}` : t; }
+function iniciais(nome) { return (nome || "?").replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0].toUpperCase()).join("") || "?"; }
+function telefone(t) { if (!t) return "—"; const d = t.replace(/^55/, ""); if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`; if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`; return "+" + t; }
+
+const SELOS = {
+  novo: ["Novo", "s-azul"], robo: ["No robô", "s-cinza"], aguardando: ["Aguardando", "s-laranja"], em_atendimento: ["Em atendimento", "s-verde"], resolvido: ["Resolvido", "s-cinza"],
+  rascunho: ["Rascunho", "s-cinza"], enviado: ["Enviado", "s-laranja"], em_analise: ["Em análise", "s-azul"], aprovado: ["Aprovado", "s-verde"], recusado: ["Recusado", "s-vermelho"], vencido: ["Vencido", "s-vermelho"],
+  agendado: ["Agendado", "s-azul"], confirmado: ["Confirmado", "s-verde"], concluido: ["Concluído", "s-cinza"], cancelado: ["Cancelado", "s-vermelho"],
+  ativo: ["Ativo", "s-verde"], inativo: ["Inativo", "s-cinza"], publicado: ["Publicado", "s-verde"],
+  urgente: ["Urgente", "s-vermelho"], alta: ["Alta", "s-laranja"], normal: ["Normal", "s-azul"], atencao: ["Atenção", "s-laranja"], info: ["Informativo", "s-azul"],
+  online: ["Online", "s-verde"], ausente: ["Ausente", "s-laranja"], offline: ["Offline", "s-cinza"],
+};
+function selo(status, textoAlternativo) { const [t, c] = SELOS[status] || [textoAlternativo || status, "s-cinza"]; return h("span", { class: "selo " + c, text: textoAlternativo || t }); }
+const CANAIS = { web: "Site", whatsapp: "WhatsApp", portal: "Portal", interno: "Interno" };
+
+function tabela(colunas, linhas, aoClicar) {
+  if (!linhas.length) return h("div", { class: "vazio", text: "Nada por aqui ainda." });
+  return h("table", { class: "tabela" },
+    h("thead", null, h("tr", null, colunas.map((c) => h("th", { class: c.num ? "num" : null, text: c.titulo })))),
+    h("tbody", null, linhas.map((l) => h("tr", { class: aoClicar ? "clicavel" : null, on: aoClicar ? { click: () => aoClicar(l) } : null },
+      colunas.map((c) => { const v = c.valor(l); return h("td", { class: c.num ? "num" : null, "data-rotulo": c.titulo }, v instanceof Node ? v : String(v ?? "—")); })))));
+}
+function cartaoNumero(rotulo, valor, tendencia, classeTendencia) {
+  return h("div", { class: "cartao" }, h("div", { class: "rotulo", text: rotulo }), h("div", { class: "valor", text: valor }),
+    tendencia ? h("div", { class: "tendencia " + (classeTendencia || ""), text: tendencia }) : null);
+}
+function pode(recurso, acao = "ver") { const p = App.sessao && App.sessao.permissoes[recurso]; return !!(p && p.includes(acao)); }
+
+/* ---------------------------------------------------------------- tema */
+function aplicarTema() {
+  const raiz = document.documentElement;
+  let pessoal = null;
+  try { pessoal = localStorage.getItem("rmd_tema"); } catch (_) { pessoal = null; }
+  const empresa = (App.sessao && App.sessao.empresa) || {};
+  const tema = pessoal && pessoal !== "empresa" ? pessoal : (empresa.tema || "alfa");
+  raiz.dataset.tema = tema;
+  if (empresa.cor_destaque && tema !== "contraste" && (!pessoal || pessoal === "empresa")) raiz.style.setProperty("--primaria", empresa.cor_destaque);
+  else raiz.style.removeProperty("--primaria");
+}
+
+/* ---------------------------------------------------------------- telas */
+function registrarTela(chave, def) { App.telas[chave] = def; }
+const MENU = [
+  ["Principal", ["dash", "chat", "names", "queues"]],
+  ["Gestão", ["quotes", "services", "flows", "agenda"]],
+  ["Integrações", ["whatsapp", "api", "alerts"]],
+  ["Administração", ["reports", "users", "backup", "plan", "security", "settings"]],
+  ["Plataforma ALFA", ["companies"]],
+  ["Minha área", ["portal"]],
+];
+
+function navegar(tela, parametros) {
+  const alvo = "#/" + tela + (parametros ? "/" + encodeURIComponent(parametros) : "");
+  if (location.hash === alvo) mostrarTela(); else location.hash = alvo;
+}
+
+async function mostrarTela() {
+  if (!App.sessao) return;
+  const [, tela, parametro] = (location.hash || "").split("/");
+  const permitidas = App.sessao.telas;
+  const chave = permitidas.includes(tela) ? tela : permitidas[0];
+  const def = App.telas[chave];
+  if (!def) return;
+  if (App.limpezaTela) { try { App.limpezaTela(); } catch (_) { /* ignora */ } App.limpezaTela = null; }
+  App.atual = chave;
+  document.querySelectorAll(".nav button").forEach((b) => b.classList.toggle("ativo", b.dataset.tela === chave));
+  $("#lateral").classList.remove("aberta");
+  const area = limpar($("#conteudo"));
+  const acoes = h("div", { class: "acoes" });
+  area.append(h("div", { class: "titulo-pagina" }, h("div", null, h("h1", { text: def.titulo }), h("p", { text: def.sub || "" })), acoes));
+  const corpo = h("div");
+  area.append(corpo);
+  document.title = `${def.titulo} — ${(App.sessao.empresa && App.sessao.empresa.nome_sistema) || "RMD Atendimento"}`;
+  try { await def.render(corpo, { acoes, parametro: parametro ? decodeURIComponent(parametro) : null }); }
+  catch (e) { corpo.append(h("div", { class: "aviso", text: e.message })); }
+}
+
+/* ---------------------------------------------------------------- estrutura */
+function montarAplicacao() {
+  aplicarTema();
+  const s = App.sessao;
+  const empresa = s.empresa || {};
+  const raiz = limpar($("#raiz"));
+  const nav = h("nav", { class: "nav", "aria-label": "Menu principal" });
+  for (const [secao, telas] of MENU) {
+    const visiveis = telas.filter((t) => s.telas.includes(t) && App.telas[t]);
+    if (!visiveis.length) continue;
+    nav.append(h("div", { class: "secao", text: secao }));
+    for (const t of visiveis) {
+      const def = App.telas[t];
+      nav.append(h("button", { type: "button", dataset: { tela: t }, on: { click: () => navegar(t) } },
+        h("span", { class: "ic", text: def.icone || "•" }), def.titulo,
+        t === "alerts" && s.alertas ? h("span", { class: "contador", id: "contador-alertas", text: String(s.alertas) }) : null));
+    }
+  }
+  const lateral = h("aside", { class: "lateral", id: "lateral" },
+    h("div", { class: "marca" }, h("div", { class: "icone", text: "R" }), h("div", null, h("b", { text: empresa.nome_sistema || "RMD Atendimento" }), h("small", { text: `Plataforma V${s.versao} • central de atendimento` }))),
+    nav, h("div", { class: "rodape-lateral", text: "Módulo oficial do ALFA — RMD Soluções" }));
+
+  const logo = empresa.logo ? h("img", { class: "logo", src: empresa.logo, alt: "Logo" }) : h("div", { class: "logo iniciais", text: iniciais(empresa.empresa_nome || "ALFA") });
+  const sub = h("div", { class: "empresa-sub" },
+    h("span", { class: "so-largo", text: empresa.nome_sistema || "RMD Atendimento" }),
+    empresa.plano ? h("span", { class: "so-largo", text: "• Plano " + empresa.plano.charAt(0).toUpperCase() + empresa.plano.slice(1) }) : null,
+    empresa.demonstracao ? h("span", { class: "selo s-demo", text: "DEMONSTRAÇÃO" }) : null,
+    h("span", { class: "selo s-azul so-largo", text: s.usuario.perfil_nome }));
+  const sino = pode("alertas") ? h("button", { class: "btn icone sino", type: "button", title: "Alertas", on: { click: () => navegar("alerts") } }, "🔔",
+    h("span", { class: "num", id: "sino-num", hidden: !s.alertas, text: String(s.alertas || "") })) : null;
+  const novoOrc = pode("orcamentos", "criar") ? h("button", { class: "btn primario", type: "button", title: "Novo orçamento", on: { click: () => App.editarOrcamento && App.editarOrcamento() } }, "+", h("span", { class: "texto-botao", text: " Novo orçamento" })) : null;
+  const botaoUsuario = h("button", { class: "usuario-topo", type: "button", on: { click: alternarMenuUsuario } },
+    h("span", { class: "avatar", text: iniciais(s.usuario.nome) }),
+    h("span", { class: "texto-usuario" }, h("span", { text: s.usuario.nome }), h("small", null, h("span", { class: "presenca online", id: "bolinha-presenca" }), " ", s.usuario.perfil_nome)));
+  const cabecalho = h("header", { class: "cabecalho" },
+    h("button", { class: "btn icone botao-menu", type: "button", "aria-label": "Abrir menu", text: "☰", on: { click: () => $("#lateral").classList.toggle("aberta") } }),
+    h("div", { class: "empresa" }, logo, h("div", { style: { minWidth: 0 } }, h("div", { class: "empresa-nome", text: empresa.empresa_nome || "Plataforma ALFA" }), sub)),
+    h("div", { class: "acoes-topo" }, sino, novoOrc, botaoUsuario));
+  raiz.append(h("div", { class: "layout" }, lateral, h("div", { class: "principal" }, cabecalho, h("main", { class: "conteudo", id: "conteudo" }))));
+  App.intervalos.forEach(clearInterval);
+  App.intervalos = [setInterval(atualizarContadores, 30000)];
+  mostrarTela();
+}
+
+async function atualizarContadores() {
+  try {
+    const s = await api("/api/sessao", { semRedirecionar: true });
+    if (!s.sessao) return;
+    const n = s.alertas || 0;
+    const sino = $("#sino-num"); if (sino) { sino.hidden = !n; sino.textContent = String(n); }
+    const c = $("#contador-alertas"); if (c) { c.hidden = !n; c.textContent = String(n); }
+  } catch (_) { /* rede instável: tenta de novo depois */ }
+}
+
+function alternarMenuUsuario() {
+  const existente = $("#menu-usuario");
+  if (existente) { existente.remove(); return; }
+  const s = App.sessao;
+  let temaAtual = "empresa";
+  try { temaAtual = localStorage.getItem("rmd_tema") || "empresa"; } catch (_) { /* sem armazenamento */ }
+  const opcoesTema = [["empresa", "Padrão da empresa"], ...Object.entries(s.temas)];
+  const presenca = seletor("presenca", [["online", "Online"], ["ausente", "Ausente"], ["offline", "Offline"]], "online");
+  presenca.addEventListener("change", async () => {
+    try { await api("/api/presenca", { dados: { presenca: presenca.value } }); $("#bolinha-presenca").className = "presenca " + presenca.value; toast("Presença atualizada."); } catch (e) { falha(e); }
+  });
+  const tema = seletor("tema", opcoesTema, temaAtual);
+  tema.addEventListener("change", () => { try { localStorage.setItem("rmd_tema", tema.value); } catch (_) { /* ok */ } aplicarTema(); });
+  const menu = h("div", { class: "menu-usuario", id: "menu-usuario" },
+    h("div", { class: "linha-menu" }, h("div", null, h("b", { text: s.usuario.nome }), h("div", { class: "suave", text: s.usuario.email }))),
+    h("hr"),
+    s.usuario.perfil !== "cliente" ? h("div", { class: "linha-menu" }, h("label", { text: "Presença" }), h("div", { style: { width: "150px" } }, presenca)) : null,
+    h("div", { class: "linha-menu" }, h("label", { text: "Meu tema" }), h("div", { style: { width: "150px" } }, tema)),
+    h("hr"),
+    h("button", { class: "btn", type: "button", style: { width: "100%" }, text: "Trocar minha senha", on: { click: () => { menu.remove(); dialogoSenha(); } } }),
+    h("div", { style: { height: "6px" } }),
+    h("button", { class: "btn perigo", type: "button", style: { width: "100%" }, text: "Sair", on: { click: sair } }));
+  document.body.append(menu);
+  setTimeout(() => document.addEventListener("mousedown", function fora(e) { if (!menu.contains(e.target) && !e.target.closest(".usuario-topo")) { menu.remove(); document.removeEventListener("mousedown", fora); } }), 0);
+}
+
+function dialogoSenha() {
+  const form = h("div", { class: "formulario" },
+    campo("Senha atual", entrada("atual", "", { type: "password", autocomplete: "current-password" }), null, true),
+    campo("Nova senha", entrada("nova", "", { type: "password", autocomplete: "new-password" }), "Mínimo 8 caracteres, com letras e números."),
+    campo("Repita a nova senha", entrada("repetir", "", { type: "password", autocomplete: "new-password" })));
+  modal({ titulo: "Trocar minha senha", conteudo: form, acoes: [{ texto: "Cancelar" }, { texto: "Salvar", classe: "primario", acao: async () => {
+    const d = lerFormulario(form);
+    if (d.nova !== d.repetir) throw new Error("As senhas novas não são iguais.");
+    await api("/api/senha", { dados: { atual: d.atual, nova: d.nova } });
+    toast("Senha alterada.");
+  } }] });
+}
+
+async function sair() {
+  try { await api("/api/sair", { dados: {} }); } catch (_) { /* já saiu */ }
+  App.sessao = null; location.hash = ""; iniciar();
+}
+
+/* ---------------------------------------------------------------- login */
+function montarLogin(primeiroAcesso) {
+  aplicarTema();
+  const raiz = limpar($("#raiz"));
+  const erro = h("div", { class: "erro-texto", role: "alert" });
+  let form;
+  if (primeiroAcesso) {
+    form = h("form", null,
+      h("p", { class: "suave", text: "Primeiro acesso: crie a empresa e o administrador. O código aparece na janela do servidor." }),
+      campo("Código de primeiro acesso", entrada("codigo", "", { required: true, autocomplete: "off" })),
+      campo("Nome da empresa", entrada("empresa", "", { required: true })),
+      campo("Seu nome", entrada("nome", "", { required: true })),
+      campo("Seu e-mail", entrada("email", "", { type: "email", required: true })),
+      campo("Senha", entrada("senha", "", { type: "password", required: true, autocomplete: "new-password" }), "Mínimo 8 caracteres, com letras e números."),
+      erro, h("button", { class: "btn primario", type: "submit", text: "Criar e entrar" }));
+  } else {
+    form = h("form", null,
+      campo("E-mail", entrada("email", "", { type: "email", required: true, autocomplete: "username" })),
+      campo("Senha", entrada("senha", "", { type: "password", required: true, autocomplete: "current-password" })),
+      erro, h("button", { class: "btn primario", type: "submit", text: "Entrar" }));
+  }
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    erro.textContent = "";
+    try {
+      App.sessao = await api(primeiroAcesso ? "/api/primeiro-acesso" : "/api/entrar", { dados: lerFormulario(form), semRedirecionar: true });
+      depoisDoLogin();
+    } catch (x) { erro.textContent = x.message; }
+  });
+  raiz.append(h("div", { class: "tela-login" }, h("div", { class: "caixa-login" },
+    h("div", { class: "marca", style: { padding: 0 } }, h("div", { class: "icone", text: "R" }), h("div", null, h("b", { style: { color: "var(--texto)" }, text: "RMD Atendimento" }), h("small", { text: "Módulo oficial do ALFA" }))),
+    h("h1", { text: primeiroAcesso ? "Configurar" : "Entrar" }), form)));
+}
+
+function montarTrocaSenha() {
+  const raiz = limpar($("#raiz"));
+  const erro = h("div", { class: "erro-texto", role: "alert" });
+  const form = h("form", null,
+    h("p", { class: "suave", text: "Você entrou com uma senha temporária. Crie a sua senha para continuar." }),
+    campo("Senha temporária", entrada("atual", "", { type: "password", required: true })),
+    campo("Nova senha", entrada("nova", "", { type: "password", required: true, autocomplete: "new-password" }), "Mínimo 8 caracteres, com letras e números."),
+    erro, h("button", { class: "btn primario", type: "submit", text: "Salvar e continuar" }));
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try { await api("/api/senha", { dados: lerFormulario(form) }); App.sessao.usuario.trocar_senha = false; iniciar(); }
+    catch (x) { erro.textContent = x.message; }
+  });
+  raiz.append(h("div", { class: "tela-login" }, h("div", { class: "caixa-login" }, h("h1", { text: "Nova senha" }), form)));
+}
+
+function depoisDoLogin() {
+  if (App.sessao.usuario.trocar_senha) return montarTrocaSenha();
+  montarAplicacao();
+}
+
+async function iniciar() {
+  try {
+    const s = await api("/api/sessao", { semRedirecionar: true });
+    if (!s.sessao) { App.sessao = null; return montarLogin(s.primeiro_acesso); }
+    App.sessao = s;
+    depoisDoLogin();
+  } catch (e) {
+    limpar($("#raiz")).append(h("div", { class: "tela-login" }, h("div", { class: "caixa-login" }, h("h1", { text: "Sem conexão" }), h("p", { class: "suave", text: e.message }),
+      h("button", { class: "btn primario", type: "button", text: "Tentar de novo", on: { click: iniciar } }))));
+  }
+}
+window.addEventListener("hashchange", mostrarTela);

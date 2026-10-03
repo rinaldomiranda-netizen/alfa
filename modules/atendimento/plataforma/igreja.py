@@ -1,0 +1,744 @@
+"""RMD Atendimento Church — recursos próprios da igreja.
+
+- Visitantes & consolidação: cartão do visitante (QR na entrada da igreja),
+  jornada da pessoa (novo → contatado → visitou de novo → célula/grupo →
+  integrado) com próximo contato e aviso de quem ficou sem retorno.
+- Pedidos de oração: com privacidade (pastoral = só liderança; equipe de
+  intercessão), contador de "orei por isso" e testemunho quando é respondido.
+- Resumo da igreja para o Dashboard e aniversariantes da semana.
+
+As tabelas existem nas duas edições (o banco é o mesmo), mas as telas e as
+rotas só aparecem quando o servidor roda como RMD Atendimento Church.
+"""
+from __future__ import annotations
+
+import json
+from datetime import date, datetime, timedelta, timezone
+
+from .conversas import normalizar_telefone
+from .db import agora
+from .nucleo import Ator, ErroNegocio, NaoEncontrado, _texto, novo_id
+
+ETAPAS = (
+    ("novo", "Primeira visita"),
+    ("contatado", "Contatado"),
+    ("retornou", "Voltou ao culto"),
+    ("grupo", "Em célula / grupo"),
+    ("integrado", "Integrado"),
+)
+CHAVES_ETAPAS = tuple(e for e, _ in ETAPAS)
+CATEGORIAS_ORACAO = ("saude", "familia", "financeiro", "trabalho", "espiritual", "gratidao", "outro")
+PRIVACIDADES = ("equipe", "pastoral")
+STATUS_ORACAO = ("aberto", "orando", "respondido", "arquivado")
+COMO_CONHECEU = ("convite", "redes_sociais", "passando", "familia", "evento", "outro")
+DIAS_SEM_CONTATO = 7
+TIPOS_UNIDADE = (
+    ("setor", "Setor"), ("campo", "Campo"), ("igreja", "Igreja"), ("congregacao", "Congregação"), ("departamento", "Departamento"),
+)
+CHAVES_TIPOS = tuple(t for t, _ in TIPOS_UNIDADE)
+# Onde cada tipo pode ficar (None = direto abaixo da Sede).
+# Capital: Sede → Setor → igrejas. Interior: Sede → Campo (uma ou mais cidades) → igrejas.
+PAIS_PERMITIDOS = {
+    "setor": (None,),
+    "campo": (None,),
+    "igreja": ("setor", "campo"),
+    "congregacao": ("setor", "campo", "igreja"),
+    "departamento": ("igreja", "congregacao", "setor", "campo"),
+}
+TEXTO_PAIS = {"setor": "fica direto abaixo da Sede", "campo": "fica direto abaixo da Sede",
+              "igreja": "fica dentro de um setor ou de um campo", "congregacao": "fica dentro de um setor, campo ou igreja",
+              "departamento": "fica dentro de uma igreja, congregação, setor ou campo"}
+TODA_A_SEDE = None  # escopo "sem limite": Owner e Administração da Sede
+
+
+def _data(valor, campo: str) -> str | None:
+    valor = (str(valor).strip() if valor else "")
+    if not valor:
+        return None
+    try:
+        return date.fromisoformat(valor[:10]).isoformat()
+    except ValueError:
+        raise ErroNegocio(f"Data inválida em '{campo}'.") from None
+
+
+def _sim(valor) -> int:
+    return 1 if valor in (True, 1, "1", "true", "sim", "on") else 0
+
+
+class IgrejaMixin:
+    # ================================================================ ORGANIZAÇÃO (hierarquia) E ESCOPO
+    # A empresa é a SEDE. Abaixo dela, uma árvore livre de setores, campos, igrejas, congregações e departamentos.
+    # Owner e Administração da Sede veem tudo. Os demais veem a parte em que estão lotados e tudo abaixo dela.
+    def _unidades_empresa(self, empresa_id: str) -> list[dict]:
+        return self.banco.todos("SELECT * FROM igreja_unidades WHERE empresa_id=? ORDER BY nome COLLATE NOCASE", (empresa_id,))
+
+    @staticmethod
+    def _descendentes(unidades: list[dict], raiz: str) -> set[str]:
+        filhos: dict[str | None, list[str]] = {}
+        for u in unidades:
+            filhos.setdefault(u["pai_id"], []).append(u["id"])
+        vistos, pilha = set(), [raiz]
+        while pilha:
+            atual = pilha.pop()
+            if atual in vistos:
+                continue
+            vistos.add(atual)
+            pilha.extend(filhos.get(atual, []))
+        return vistos
+
+    def _lotacao(self, ator: Ator) -> dict | None:
+        return self.banco.um("SELECT * FROM igreja_lotacoes WHERE usuario_id=? AND empresa_id=?", (ator.usuario_id, ator.empresa))
+
+    def _escopo(self, ator: Ator) -> set[str] | None:
+        """None = vê a Sede inteira. Um conjunto = só essas unidades (vazio = só o que não tem unidade)."""
+        if ator.perfil in ("owner", "admin"):
+            return TODA_A_SEDE
+        unidades = self._unidades_empresa(ator.empresa)
+        if not unidades:
+            return TODA_A_SEDE  # igreja sem organização cadastrada: funciona como antes
+        lot = self._lotacao(ator)
+        if not lot:
+            return set()
+        return self._descendentes(unidades, lot["unidade_id"])
+
+    @staticmethod
+    def _filtro_escopo(escopo: set[str] | None, coluna: str) -> tuple[str, list]:
+        if escopo is TODA_A_SEDE:
+            return "", []
+        if not escopo:
+            return f" AND {coluna} IS NULL", []
+        return f" AND {coluna} IN ({','.join('?' * len(escopo))})", sorted(escopo)
+
+    def _no_escopo(self, ator: Ator, unidade_id: str | None) -> bool:
+        escopo = self._escopo(ator)
+        return escopo is TODA_A_SEDE or (unidade_id in escopo if unidade_id else not escopo)
+
+    def _unidade_para_registro(self, ator: Ator | None, empresa_id: str, pedida, atual: str | None = None) -> str | None:
+        """Escolhe/valida a unidade de um visitante ou pedido: precisa existir e estar no alcance de quem registra."""
+        if pedida is None:
+            if atual is not None or ator is None:
+                return atual
+            lot = self._lotacao(ator) if ator.perfil not in ("owner", "admin") else None
+            return lot["unidade_id"] if lot else None
+        pedida = str(pedida).strip() or None
+        if pedida and not self.banco.um("SELECT 1 AS x FROM igreja_unidades WHERE id=? AND empresa_id=?", (pedida, empresa_id)):
+            raise ErroNegocio("Igreja / unidade não encontrada.")
+        if ator is not None and not self._no_escopo(ator, pedida):
+            raise ErroNegocio("Você só pode registrar na sua parte da organização.")
+        return pedida
+
+    def _escopo_cache(self, ator: Ator) -> set[str] | None:
+        if "_escopo_igreja" not in ator.extras:
+            ator.extras["_escopo_igreja"] = self._escopo(ator)
+        return ator.extras["_escopo_igreja"]
+
+    def _unidade_do_contato(self, empresa_id: str, contato_id: str | None) -> str | None:
+        linha = self.banco.um("SELECT unidade_id FROM igreja_jornada WHERE empresa_id=? AND contato_id=?", (empresa_id, contato_id)) if contato_id else None
+        return linha["unidade_id"] if linha else None
+
+    def _conversa_no_escopo_igreja(self, ator: Ator, conversa: dict) -> bool:
+        """Conversa pertence à igreja da pessoa (pela consolidação). Sem igreja = da Sede."""
+        escopo = self._escopo_cache(ator)
+        if escopo is TODA_A_SEDE or conversa.get("responsavel_id") == ator.usuario_id:
+            return True
+        unidade = self._unidade_do_contato(conversa["empresa_id"], conversa.get("contato_id"))
+        return unidade in escopo if unidade else not escopo
+
+    def _filtrar_alertas_igreja(self, ator: Ator, alertas: list[dict]) -> list[dict]:
+        """Lotado numa parte: só os alertas de visitantes, orações e conversas dessa parte."""
+        escopo = self._escopo_cache(ator)
+        if escopo is TODA_A_SEDE:
+            return alertas
+        saida = []
+        for a in alertas:
+            ref, unidade, conhecido = a.get("referencia"), None, False
+            if ref:
+                for sql in ("SELECT unidade_id FROM igreja_jornada WHERE id=?", "SELECT unidade_id FROM igreja_oracoes WHERE id=?"):
+                    linha = self.banco.um(sql, (ref,))
+                    if linha:
+                        unidade, conhecido = linha["unidade_id"], True
+                        break
+                if not conhecido:
+                    conversa = self.banco.um("SELECT * FROM conversas WHERE id=?", (ref,))
+                    if conversa:
+                        if self._conversa_no_escopo_igreja(ator, conversa):
+                            saida.append(a)
+                        continue
+            if a.get("tipo") == "oracao" and conhecido:
+                oracao = self.banco.um("SELECT privacidade FROM igreja_oracoes WHERE id=?", (ref,))
+                if oracao and oracao["privacidade"] == "pastoral" and not self._ver_pastoral(ator):
+                    continue
+            if unidade in escopo if unidade else not escopo:
+                saida.append(a)
+        return saida
+
+    def _caminhos(self, unidades: list[dict]) -> dict[str, str]:
+        por_id = {u["id"]: u for u in unidades}
+        caminhos = {}
+        for u in unidades:
+            partes, atual, guarda = [], u, 0
+            while atual and guarda < 20:
+                partes.append(atual["nome"])
+                atual = por_id.get(atual["pai_id"])
+                guarda += 1
+            caminhos[u["id"]] = " › ".join(reversed(partes))
+        return caminhos
+
+    def listar_organizacao(self, ator: Ator) -> dict:
+        ator.exigir("organizacao", "ver")
+        unidades = self._unidades_empresa(ator.empresa)
+        escopo = self._escopo(ator)
+        caminhos = self._caminhos(unidades)
+        contagem = lambda sql: {l["u"]: l["n"] for l in self.banco.todos(sql, (ator.empresa,))}  # noqa: E731
+        visitantes = contagem("SELECT unidade_id AS u, COUNT(*) AS n FROM igreja_jornada WHERE empresa_id=? AND etapa<>'integrado' GROUP BY unidade_id")
+        oracoes = contagem("SELECT unidade_id AS u, COUNT(*) AS n FROM igreja_oracoes WHERE empresa_id=? AND status IN ('aberto','orando') AND privacidade='equipe' GROUP BY unidade_id")
+        lotacoes = self.banco.todos(
+            """SELECT l.usuario_id, l.unidade_id, u.nome, u.perfil, u.ativo FROM igreja_lotacoes l JOIN usuarios u ON u.id=l.usuario_id
+               WHERE l.empresa_id=? ORDER BY u.nome COLLATE NOCASE""", (ator.empresa,))
+        lista = []
+        for u in unidades:
+            if escopo is not TODA_A_SEDE and u["id"] not in escopo:
+                continue
+            sub = self._descendentes(unidades, u["id"])
+            lista.append({**u, "ativa": bool(u["ativa"]), "caminho": caminhos[u["id"]],
+                          "pai_id": u["pai_id"] if (escopo is TODA_A_SEDE or u["pai_id"] in escopo) else None,
+                          "visitantes": sum(visitantes.get(i, 0) for i in sub), "oracoes": sum(oracoes.get(i, 0) for i in sub),
+                          "usuarios": [{"id": l["usuario_id"], "nome": l["nome"], "perfil": l["perfil"]} for l in lotacoes if l["unidade_id"] == u["id"] and l["ativo"]]})
+        resposta = {"unidades": lista, "tipos": [{"tipo": t, "nome": n} for t, n in TIPOS_UNIDADE],
+                    "pode_editar": ator.pode("organizacao", "editar"), "toda_a_sede": escopo is TODA_A_SEDE}
+        lot = self._lotacao(ator)
+        resposta["minha_unidade"] = (caminhos.get(lot["unidade_id"]) if lot else None)
+        if ator.pode("organizacao", "editar"):
+            usuarios = self.banco.todos("SELECT id, nome, perfil FROM usuarios WHERE empresa_id=? AND ativo=1 AND perfil<>'cliente' ORDER BY nome COLLATE NOCASE",
+                                        (ator.empresa,))
+            onde = {l["usuario_id"]: l["unidade_id"] for l in lotacoes}
+            resposta["usuarios"] = [{**x, "unidade_id": onde.get(x["id"]), "unidade": caminhos.get(onde.get(x["id"]) or "")} for x in usuarios]
+        return resposta
+
+    def salvar_unidade(self, ator: Ator, dados: dict, unidade_id: str | None = None) -> dict:
+        ator.exigir("organizacao", "editar")
+        atual = None
+        if unidade_id:
+            atual = self.banco.um("SELECT * FROM igreja_unidades WHERE id=? AND empresa_id=?", (unidade_id, ator.empresa))
+            if not atual:
+                raise NaoEncontrado("Parte da organização não encontrada.")
+        atual = atual or {}
+        tipo = dados.get("tipo", atual.get("tipo")) or "igreja"
+        if tipo not in CHAVES_TIPOS:
+            raise ErroNegocio("Tipo inválido.")
+        pai = dados.get("pai_id", atual.get("pai_id")) or None
+        unidades = self._unidades_empresa(ator.empresa)
+        tipo_pai = None
+        if pai:
+            linha_pai = next((u for u in unidades if u["id"] == pai), None)
+            if not linha_pai:
+                raise ErroNegocio("A parte de cima escolhida não existe.")
+            if unidade_id and pai in self._descendentes(unidades, unidade_id):
+                raise ErroNegocio("Não dá para colocar uma parte dentro dela mesma.")
+            tipo_pai = linha_pai["tipo"]
+        if tipo_pai not in PAIS_PERMITIDOS[tipo]:
+            raise ErroNegocio(f"{dict(TIPOS_UNIDADE)[tipo]} {TEXTO_PAIS[tipo]}.")
+        if unidade_id:  # mudar o tipo não pode deixar as partes de dentro em lugar errado
+            for filho in (u for u in unidades if u["pai_id"] == unidade_id):
+                if tipo not in PAIS_PERMITIDOS[filho["tipo"]]:
+                    raise ErroNegocio(f"{filho['nome']} não pode ficar dentro de {dict(TIPOS_UNIDADE)[tipo].lower()}.")
+        responsavel = dados.get("responsavel_id", atual.get("responsavel_id")) or None
+        if responsavel and not self.banco.um("SELECT 1 AS x FROM usuarios WHERE id=? AND empresa_id=?", (responsavel, ator.empresa)):
+            raise ErroNegocio("Responsável não encontrado.")
+        valores = {
+            "tipo": tipo, "pai_id": pai,
+            "nome": _texto(dados.get("nome", atual.get("nome")), "nome", True, 120),
+            "responsavel_nome": _texto(dados.get("responsavel_nome", atual.get("responsavel_nome")), "pastor responsável", False, 120),
+            "responsavel_id": responsavel,
+            "telefone": normalizar_telefone(dados.get("telefone", atual.get("telefone"))),
+            "endereco": _texto(dados.get("endereco", atual.get("endereco")), "endereço", False, 200),
+            "ativa": _sim(dados.get("ativa", atual.get("ativa", 1))),
+        }
+        if unidade_id:
+            self.banco.executar(
+                """UPDATE igreja_unidades SET tipo=:tipo, pai_id=:pai_id, nome=:nome, responsavel_nome=:responsavel_nome,
+                   responsavel_id=:responsavel_id, telefone=:telefone, endereco=:endereco, ativa=:ativa, atualizado_em=:agora WHERE id=:id""",
+                {**valores, "agora": agora(), "id": unidade_id})
+        else:
+            unidade_id = novo_id()
+            self.banco.executar(
+                """INSERT INTO igreja_unidades(id, empresa_id, pai_id, tipo, nome, responsavel_nome, responsavel_id, telefone, endereco, ativa,
+                   criado_em, atualizado_em) VALUES (:id,:empresa,:pai_id,:tipo,:nome,:responsavel_nome,:responsavel_id,:telefone,:endereco,
+                   :ativa,:agora,:agora)""", {**valores, "id": unidade_id, "empresa": ator.empresa, "agora": agora()})
+        # o pastor responsável passa a enxergar a parte dele (se ainda não estiver lotado em outro lugar)
+        if responsavel and not self.banco.um("SELECT 1 AS x FROM igreja_lotacoes WHERE usuario_id=?", (responsavel,)):
+            self.lotar_usuario(ator, responsavel, unidade_id)
+        self.auditar(ator, "igreja.unidade", unidade_id, {"tipo": tipo, "nome": valores["nome"]})
+        return next(u for u in self.listar_organizacao(ator)["unidades"] if u["id"] == unidade_id)
+
+    def excluir_unidade(self, ator: Ator, unidade_id: str) -> dict:
+        ator.exigir("organizacao", "editar")
+        if not self.banco.um("SELECT 1 AS x FROM igreja_unidades WHERE id=? AND empresa_id=?", (unidade_id, ator.empresa)):
+            raise NaoEncontrado("Parte da organização não encontrada.")
+        for sql, motivo in (("SELECT 1 AS x FROM igreja_unidades WHERE pai_id=?", "ela tem partes abaixo"),
+                            ("SELECT 1 AS x FROM igreja_lotacoes WHERE unidade_id=?", "há usuários lotados nela"),
+                            ("SELECT 1 AS x FROM igreja_jornada WHERE unidade_id=?", "há visitantes ligados a ela"),
+                            ("SELECT 1 AS x FROM igreja_oracoes WHERE unidade_id=?", "há pedidos de oração ligados a ela")):
+            if self.banco.um(sql, (unidade_id,)):
+                raise ErroNegocio(f"Não dá para excluir: {motivo}. Você pode desativar.")
+        self.banco.executar("DELETE FROM igreja_unidades WHERE id=?", (unidade_id,))
+        self.auditar(ator, "igreja.unidade.excluir", unidade_id, None)
+        return {"ok": True}
+
+    def lotar_usuario(self, ator: Ator, usuario_id: str, unidade_id: str | None) -> dict:
+        ator.exigir("organizacao", "editar")
+        if not self.banco.um("SELECT 1 AS x FROM usuarios WHERE id=? AND empresa_id=?", (usuario_id, ator.empresa)):
+            raise NaoEncontrado("Usuário não encontrado.")
+        if unidade_id:
+            if not self.banco.um("SELECT 1 AS x FROM igreja_unidades WHERE id=? AND empresa_id=?", (unidade_id, ator.empresa)):
+                raise ErroNegocio("Parte da organização não encontrada.")
+            self.banco.executar(
+                """INSERT INTO igreja_lotacoes(id, empresa_id, usuario_id, unidade_id, atualizado_em) VALUES (?,?,?,?,?)
+                   ON CONFLICT(usuario_id) DO UPDATE SET unidade_id=excluded.unidade_id, atualizado_em=excluded.atualizado_em""",
+                (novo_id(), ator.empresa, usuario_id, unidade_id, agora()))
+        else:
+            self.banco.executar("DELETE FROM igreja_lotacoes WHERE usuario_id=? AND empresa_id=?", (usuario_id, ator.empresa))
+        self.auditar(ator, "igreja.lotacao", usuario_id, {"unidade": unidade_id})
+        return {"ok": True}
+
+    # ================================================================ VISITANTES / CONSOLIDAÇÃO
+    def _jornada(self, ator: Ator, jornada_id: str) -> dict:
+        linha = self.banco.um("SELECT * FROM igreja_jornada WHERE id=? AND empresa_id=?", (jornada_id, ator.empresa))
+        if not linha or not self._no_escopo(ator, linha.get("unidade_id")):
+            raise NaoEncontrado("Pessoa não encontrada na consolidação.")
+        return linha
+
+    def _jornada_publica(self, linha: dict) -> dict:
+        hoje = date.today()
+        proximo = linha.get("proximo_contato")
+        atrasado = bool(proximo and proximo < hoje.isoformat() and linha["etapa"] != "integrado")
+        primeira = linha.get("primeira_visita")
+        dias = (hoje - date.fromisoformat(primeira)).days if primeira else None
+        dados = json.loads(linha.get("contato_dados") or "{}") if linha.get("contato_dados") else {}
+        return {**{k: v for k, v in linha.items() if k != "contato_dados"}, "atrasado": atrasado, "dias_desde_visita": dias,
+                "nascimento": dados.get("nascimento")}
+
+    def listar_jornada(self, ator: Ator, etapa: str | None = None, unidade: str | None = None) -> list[dict]:
+        ator.exigir("visitantes", "ver")
+        sql = """SELECT j.*, c.nome, c.whatsapp, c.email, c.dados AS contato_dados, u.nome AS responsavel_nome, un.nome AS unidade_nome
+                 FROM igreja_jornada j JOIN contatos c ON c.id=j.contato_id LEFT JOIN usuarios u ON u.id=j.responsavel_id
+                 LEFT JOIN igreja_unidades un ON un.id=j.unidade_id
+                 WHERE j.empresa_id=?"""
+        filtro, extra = self._filtro_escopo(self._escopo(ator), "j.unidade_id")
+        sql += filtro
+        parametros: list = [ator.empresa, *extra]
+        if unidade:
+            sql += " AND j.unidade_id=?"
+            parametros.append(unidade)
+        if etapa:
+            if etapa not in CHAVES_ETAPAS:
+                raise ErroNegocio("Etapa inválida.")
+            sql += " AND j.etapa=?"
+            parametros.append(etapa)
+        sql += " ORDER BY CASE WHEN j.proximo_contato IS NULL THEN 1 ELSE 0 END, j.proximo_contato, j.criado_em DESC LIMIT 1000"
+        return [self._jornada_publica(l) for l in self.banco.todos(sql, parametros)]
+
+    def _limpar_jornada(self, ator: Ator | None, empresa_id: str, dados: dict, atual: dict | None = None) -> dict:
+        atual = atual or {}
+        etapa = dados.get("etapa", atual.get("etapa", "novo"))
+        if etapa not in CHAVES_ETAPAS:
+            raise ErroNegocio("Etapa inválida.")
+        como = dados.get("como_conheceu", atual.get("como_conheceu")) or None
+        if como and como not in COMO_CONHECEU:
+            como = "outro"
+        responsavel = dados.get("responsavel_id", atual.get("responsavel_id")) or None
+        if responsavel and not self.banco.um("SELECT 1 AS x FROM usuarios WHERE id=? AND empresa_id=?", (responsavel, empresa_id)):
+            raise ErroNegocio("Responsável não encontrado nesta igreja.")
+        return {
+            "unidade_id": self._unidade_para_registro(ator, empresa_id, dados.get("unidade_id"), atual.get("unidade_id") if atual else None),
+            "etapa": etapa,
+            "primeira_visita": _data(dados.get("primeira_visita", atual.get("primeira_visita")), "primeira visita") or date.today().isoformat(),
+            "como_conheceu": como,
+            "convidado_por": _texto(dados.get("convidado_por", atual.get("convidado_por")), "convidado por", False, 120),
+            "quer_visita": _sim(dados.get("quer_visita", atual.get("quer_visita", 0))),
+            "proximo_contato": _data(dados.get("proximo_contato", atual.get("proximo_contato")), "próximo contato"),
+            "responsavel_id": responsavel,
+            "observacao": _texto(dados.get("observacao", atual.get("observacao")), "observação", False, 2000),
+        }
+
+    def salvar_jornada(self, ator: Ator, dados: dict, jornada_id: str | None = None) -> dict:
+        ator.exigir("visitantes", "editar" if jornada_id else "criar")
+        atual = self._jornada(ator, jornada_id) if jornada_id else None
+        valores = self._limpar_jornada(ator, ator.empresa, dados, atual)
+        if atual:
+            if atual["etapa"] != valores["etapa"] and "proximo_contato" not in dados and valores["etapa"] != "integrado":
+                valores["proximo_contato"] = (date.today() + timedelta(days=DIAS_SEM_CONTATO)).isoformat()
+            self.banco.executar(
+                """UPDATE igreja_jornada SET etapa=:etapa, primeira_visita=:primeira_visita, como_conheceu=:como_conheceu,
+                   convidado_por=:convidado_por, quer_visita=:quer_visita, proximo_contato=:proximo_contato,
+                   responsavel_id=:responsavel_id, observacao=:observacao, unidade_id=:unidade_id, atualizado_em=:agora WHERE id=:id""",
+                {**valores, "agora": agora(), "id": jornada_id})
+            if atual["etapa"] != valores["etapa"]:
+                self.banco.executar("UPDATE contatos SET ultimo_contato=? WHERE id=?", (agora(), atual["contato_id"]))
+            self.auditar(ator, "igreja.jornada", jornada_id, {"etapa": valores["etapa"]})
+        else:
+            contato_id = dados.get("contato_id")
+            if contato_id:
+                if not self.banco.um("SELECT 1 AS x FROM contatos WHERE id=? AND empresa_id=?", (contato_id, ator.empresa)):
+                    raise NaoEncontrado("Nome não encontrado.")
+            else:
+                contato_id = self._contato_do_visitante(ator.empresa, dados)["id"]
+            if self.banco.um("SELECT 1 AS x FROM igreja_jornada WHERE empresa_id=? AND contato_id=?", (ator.empresa, contato_id)):
+                raise ErroNegocio("Essa pessoa já está na consolidação.")
+            jornada_id = self._nova_jornada(ator.empresa, contato_id, valores)
+            self.auditar(ator, "igreja.visitante", jornada_id, None)
+        return next(j for j in self.listar_jornada(ator) if j["id"] == jornada_id)
+
+    def _nova_jornada(self, empresa_id: str, contato_id: str, valores: dict) -> str:
+        jornada_id = novo_id()
+        if not valores.get("proximo_contato") and valores.get("etapa") != "integrado":
+            valores["proximo_contato"] = (date.today() + timedelta(days=2)).isoformat()
+        self.banco.executar(
+            """INSERT INTO igreja_jornada(id, empresa_id, contato_id, etapa, primeira_visita, como_conheceu, convidado_por, quer_visita,
+               proximo_contato, responsavel_id, observacao, unidade_id, criado_em, atualizado_em)
+               VALUES (:id,:empresa,:contato,:etapa,:primeira_visita,:como_conheceu,:convidado_por,:quer_visita,:proximo_contato,
+               :responsavel_id,:observacao,:unidade_id,:agora,:agora)""",
+            {"unidade_id": None, **valores, "id": jornada_id, "empresa": empresa_id, "contato": contato_id, "agora": agora()})
+        return jornada_id
+
+    def _contato_do_visitante(self, empresa_id: str, dados: dict) -> dict:
+        whatsapp = normalizar_telefone(dados.get("telefone"))
+        contato = self.banco.um("SELECT * FROM contatos WHERE empresa_id=? AND whatsapp=?", (empresa_id, whatsapp)) if whatsapp else None
+        nascimento = _data(dados.get("nascimento"), "data de nascimento")
+        if not contato:
+            contato = self._criar_contato(empresa_id, {"nome": dados.get("nome"), "telefone": dados.get("telefone"),
+                                                        "email": dados.get("email"), "tags": ["visitante"]})
+        if nascimento or dados.get("bairro"):
+            extras = json.loads(contato.get("dados") or "{}") if isinstance(contato.get("dados"), str) else dict(contato.get("dados") or {})
+            if nascimento:
+                extras["nascimento"] = nascimento
+            if dados.get("bairro"):
+                extras["bairro"] = _texto(dados.get("bairro"), "bairro", False, 80)
+            self.banco.executar("UPDATE contatos SET dados=? WHERE id=?", (json.dumps(extras, ensure_ascii=False), contato["id"]))
+        return contato
+
+    def registrar_contato_jornada(self, ator: Ator, jornada_id: str, nota: str | None = None, dias: int = DIAS_SEM_CONTATO) -> dict:
+        """'Falei com a pessoa': registra o contato, avança de 'novo' para 'contatado' e marca o próximo retorno."""
+        ator.exigir("visitantes", "editar")
+        atual = self._jornada(ator, jornada_id)
+        etapa = "contatado" if atual["etapa"] == "novo" else atual["etapa"]
+        historico = (atual.get("observacao") or "").strip()
+        if nota:
+            linha = f"{date.today().strftime('%d/%m')} • {ator.nome}: {_texto(nota, 'anotação', False, 500)}"
+            historico = (linha + ("\n" + historico if historico else ""))[:2000]
+        proximo = None if etapa == "integrado" else (date.today() + timedelta(days=max(1, min(int(dias or DIAS_SEM_CONTATO), 90)))).isoformat()
+        self.banco.executar("UPDATE igreja_jornada SET etapa=?, proximo_contato=?, observacao=?, atualizado_em=? WHERE id=?",
+                            (etapa, proximo, historico or None, agora(), jornada_id))
+        self.banco.executar("UPDATE contatos SET ultimo_contato=? WHERE id=?", (agora(), atual["contato_id"]))
+        self.auditar(ator, "igreja.contato", jornada_id, {"etapa": etapa})
+        return next(j for j in self.listar_jornada(ator) if j["id"] == jornada_id)
+
+    # ================================================================ PEDIDOS DE ORAÇÃO
+    def _ver_pastoral(self, ator: Ator) -> bool:
+        return ator.pode("oracoes", "pastoral")
+
+    def listar_oracoes(self, ator: Ator, status: str | None = None) -> list[dict]:
+        ator.exigir("oracoes", "ver")
+        sql = """SELECT o.*, c.nome AS contato_nome, un.nome AS unidade_nome FROM igreja_oracoes o LEFT JOIN contatos c ON c.id=o.contato_id
+                 LEFT JOIN igreja_unidades un ON un.id=o.unidade_id WHERE o.empresa_id=?"""
+        filtro, extra = self._filtro_escopo(self._escopo(ator), "o.unidade_id")
+        sql += filtro
+        parametros: list = [ator.empresa, *extra]
+        if not self._ver_pastoral(ator):
+            sql += " AND o.privacidade='equipe'"
+        if status:
+            if status not in STATUS_ORACAO:
+                raise ErroNegocio("Status inválido.")
+            sql += " AND o.status=?"
+            parametros.append(status)
+        else:
+            sql += " AND o.status<>'arquivado'"
+        sql += " ORDER BY CASE o.status WHEN 'aberto' THEN 0 WHEN 'orando' THEN 1 WHEN 'respondido' THEN 2 ELSE 3 END, o.criado_em DESC LIMIT 500"
+        linhas = self.banco.todos(sql, parametros)
+        for l in linhas:
+            l["anonimo"] = bool(l["anonimo"])
+            if l["anonimo"]:
+                l["nome"] = "Pedido anônimo"
+                l["telefone"] = None
+                l["contato_nome"] = None
+        return linhas
+
+    def _oracao(self, ator: Ator, oracao_id: str) -> dict:
+        linha = self.banco.um("SELECT * FROM igreja_oracoes WHERE id=? AND empresa_id=?", (oracao_id, ator.empresa))
+        if not linha or (linha["privacidade"] == "pastoral" and not self._ver_pastoral(ator)) or not self._no_escopo(ator, linha.get("unidade_id")):
+            raise NaoEncontrado("Pedido de oração não encontrado.")
+        return linha
+
+    def _limpar_oracao(self, dados: dict, atual: dict | None = None) -> dict:
+        atual = atual or {}
+        categoria = dados.get("categoria", atual.get("categoria")) or "outro"
+        privacidade = dados.get("privacidade", atual.get("privacidade")) or "equipe"
+        status = dados.get("status", atual.get("status")) or "aberto"
+        if categoria not in CATEGORIAS_ORACAO:
+            categoria = "outro"
+        if privacidade not in PRIVACIDADES:
+            raise ErroNegocio("Privacidade inválida.")
+        if status not in STATUS_ORACAO:
+            raise ErroNegocio("Status inválido.")
+        return {
+            "nome": _texto(dados.get("nome", atual.get("nome")), "nome", False, 120) or "Sem nome",
+            "telefone": normalizar_telefone(dados.get("telefone", atual.get("telefone"))),
+            "pedido": _texto(dados.get("pedido", atual.get("pedido")), "pedido", True, 2000),
+            "categoria": categoria, "privacidade": privacidade, "status": status,
+            "anonimo": _sim(dados.get("anonimo", atual.get("anonimo", 0))),
+            "quer_contato": _sim(dados.get("quer_contato", atual.get("quer_contato", 0))),
+            "testemunho": _texto(dados.get("testemunho", atual.get("testemunho")), "testemunho", False, 2000),
+        }
+
+    def salvar_oracao(self, ator: Ator, dados: dict, oracao_id: str | None = None) -> dict:
+        ator.exigir("oracoes", "editar" if oracao_id else "criar")
+        atual = self._oracao(ator, oracao_id) if oracao_id else None
+        valores = self._limpar_oracao(dados, atual)
+        valores["unidade_id"] = self._unidade_para_registro(ator, ator.empresa, dados.get("unidade_id"), atual.get("unidade_id") if atual else None)
+        # (a equipe pode registrar um pedido pastoral: só a liderança vai ver)
+        if atual:
+            respondido_em = atual.get("respondido_em")
+            if valores["status"] == "respondido" and not respondido_em:
+                respondido_em = agora()
+            self.banco.executar(
+                """UPDATE igreja_oracoes SET nome=:nome, telefone=:telefone, pedido=:pedido, categoria=:categoria, privacidade=:privacidade,
+                   status=:status, anonimo=:anonimo, quer_contato=:quer_contato, testemunho=:testemunho, respondido_em=:respondido_em,
+                   unidade_id=:unidade_id, atualizado_em=:agora WHERE id=:id""",
+                {**valores, "respondido_em": respondido_em, "agora": agora(), "id": oracao_id})
+            self.auditar(ator, "igreja.oracao", oracao_id, {"status": valores["status"]})
+        else:
+            oracao_id = self._nova_oracao(ator.empresa, valores, dados.get("contato_id"), "equipe")
+            self.auditar(ator, "igreja.oracao", oracao_id, {"novo": True})
+        linha = self._oracao(ator, oracao_id) if (valores["privacidade"] == "equipe" or self._ver_pastoral(ator)) else None
+        return linha or {"id": oracao_id, "privacidade": "pastoral", "registrado": True}
+
+    def _nova_oracao(self, empresa_id: str, valores: dict, contato_id: str | None, origem: str) -> str:
+        oracao_id = novo_id()
+        if contato_id and not self.banco.um("SELECT 1 AS x FROM contatos WHERE id=? AND empresa_id=?", (contato_id, empresa_id)):
+            contato_id = None
+        self.banco.executar(
+            """INSERT INTO igreja_oracoes(id, empresa_id, contato_id, nome, telefone, pedido, categoria, privacidade, status, anonimo,
+               quer_contato, testemunho, vezes_orado, origem, unidade_id, criado_em, atualizado_em)
+               VALUES (:id,:empresa,:contato,:nome,:telefone,:pedido,:categoria,:privacidade,:status,:anonimo,:quer_contato,:testemunho,
+               0,:origem,:unidade_id,:agora,:agora)""",
+            {"unidade_id": None, **valores, "id": oracao_id, "empresa": empresa_id, "contato": contato_id, "origem": origem, "agora": agora()})
+        if valores["privacidade"] == "pastoral" or valores["categoria"] in ("saude",) or valores.get("quer_contato"):
+            nivel = "atencao" if valores["privacidade"] == "pastoral" else "info"
+            self._novo_alerta(empresa_id, f"oracao:{oracao_id}", "oracao", nivel, "Novo pedido de oração",
+                              ("Pedido pastoral (confidencial)." if valores["privacidade"] == "pastoral" else
+                               f"{'Pedido anônimo' if valores.get('anonimo') else valores['nome']}"
+                               f"{' pediu contato' if valores.get('quer_contato') else ''}."), oracao_id)
+        return oracao_id
+
+    def orei(self, ator: Ator, oracao_id: str) -> dict:
+        ator.exigir("oracoes", "ver")
+        self._oracao(ator, oracao_id)
+        self.banco.executar(
+            "UPDATE igreja_oracoes SET vezes_orado=vezes_orado+1, status=CASE WHEN status='aberto' THEN 'orando' ELSE status END, atualizado_em=? WHERE id=?",
+            (agora(), oracao_id))
+        return self._oracao(ator, oracao_id)
+
+    # ================================================================ PÚBLICO (cartão do visitante / pedido de oração)
+    def publico_cartao(self, slug: str, dados: dict) -> dict:
+        empresa = self.empresa_por_slug(slug)
+        if not empresa:
+            raise NaoEncontrado("Igreja não encontrada.")
+        if not _sim(dados.get("consentimento")):
+            raise ErroNegocio("Marque a autorização para a igreja guardar seus dados e falar com você.")
+        tipo = dados.get("tipo") or "visitante"
+        unidade = (str(dados.get("unidade") or "").strip() or None)
+        if unidade and not self.banco.um("SELECT 1 AS x FROM igreja_unidades WHERE id=? AND empresa_id=? AND ativa=1", (unidade, empresa["id"])):
+            unidade = None
+        if tipo == "oracao":
+            valores = self._limpar_oracao({**dados, "status": "aberto", "testemunho": None}) | {"unidade_id": unidade}
+            contato_id = None
+            if valores["telefone"]:
+                linha = self.banco.um("SELECT id FROM contatos WHERE empresa_id=? AND whatsapp=?", (empresa["id"], valores["telefone"]))
+                contato_id = linha["id"] if linha else None
+            self._nova_oracao(empresa["id"], valores, contato_id, "cartao")
+            return {"ok": True, "mensagem": "Recebemos o seu pedido. Vamos orar por você."}
+        if not normalizar_telefone(dados.get("telefone")):
+            raise ErroNegocio("Informe o seu WhatsApp para a igreja poder falar com você.")
+        contato = self._contato_do_visitante(empresa["id"], dados)
+        existe = self.banco.um("SELECT id FROM igreja_jornada WHERE empresa_id=? AND contato_id=?", (empresa["id"], contato["id"]))
+        if existe:
+            self.banco.executar("UPDATE igreja_jornada SET etapa=CASE WHEN etapa IN ('novo','contatado') THEN 'retornou' ELSE etapa END, atualizado_em=? WHERE id=?",
+                                (agora(), existe["id"]))
+        else:
+            valores = self._limpar_jornada(None, empresa["id"], {k: dados.get(k) for k in ("como_conheceu", "convidado_por", "quer_visita")} | {"etapa": "novo", "unidade_id": unidade})
+            jornada_id = self._nova_jornada(empresa["id"], contato["id"], valores)
+            self._novo_alerta(empresa["id"], f"visitante:{jornada_id}", "visitante", "info", "Novo visitante",
+                              f"{contato['nome']} preencheu o cartão do visitante{' e quer receber uma visita' if valores['quer_visita'] else ''}.", jornada_id)
+        if (dados.get("pedido") or "").strip():
+            valores = self._limpar_oracao({"nome": contato["nome"], "telefone": dados.get("telefone"), "pedido": dados.get("pedido"),
+                                           "categoria": dados.get("categoria") or "outro", "privacidade": "equipe"}) | {"unidade_id": unidade}
+            self._nova_oracao(empresa["id"], valores, contato["id"], "cartao")
+        return {"ok": True, "mensagem": "Que alegria ter você conosco! Em breve alguém da igreja vai falar com você."}
+
+    def publico_unidade(self, slug: str, unidade_id: str) -> dict:
+        empresa = self.empresa_por_slug(slug)
+        linha = self.banco.um("SELECT nome, tipo FROM igreja_unidades WHERE id=? AND empresa_id=? AND ativa=1",
+                              (unidade_id, empresa["id"])) if empresa else None
+        if not linha:
+            raise NaoEncontrado("Igreja não encontrada.")
+        return {"nome": linha["nome"], "tipo": linha["tipo"]}
+
+    # ================================================================ RESUMO (Dashboard)
+    def resumo_igreja(self, ator: Ator) -> dict:
+        ator.exigir("dashboard", "ver")
+        e = ator.empresa
+        conta = lambda sql, p: (self.banco.um(sql, p) or {}).get("n") or 0  # noqa: E731
+        semana = (date.today() - timedelta(days=7)).isoformat()
+        mes = (date.today() - timedelta(days=30)).isoformat()
+        hoje = date.today().isoformat()
+        escopo = self._escopo(ator)
+        fe, pe = self._filtro_escopo(escopo, "unidade_id")
+        filtro_privado = ("" if self._ver_pastoral(ator) else " AND privacidade='equipe'") + fe
+        etapas = {k: 0 for k in CHAVES_ETAPAS}
+        for l in self.banco.todos("SELECT etapa, COUNT(*) AS n FROM igreja_jornada WHERE empresa_id=?" + fe + " GROUP BY etapa", (e, *pe)):
+            etapas[l["etapa"]] = l["n"]
+        aniversariantes = []
+        inicio = date.today()
+        sql_aniv = "SELECT id, nome, whatsapp, dados FROM contatos WHERE empresa_id=? AND dados LIKE '%nascimento%'"
+        if escopo is not TODA_A_SEDE:  # quem é de uma parte só vê os aniversariantes acompanhados ali
+            sql_aniv += " AND id IN (SELECT contato_id FROM igreja_jornada WHERE empresa_id=?" + fe + ")"
+        for c in self.banco.todos(sql_aniv, (e,) if escopo is TODA_A_SEDE else (e, e, *pe)):
+            try:
+                nasc = date.fromisoformat(json.loads(c["dados"] or "{}").get("nascimento") or "")
+            except ValueError:
+                continue
+            for ano in (inicio.year, inicio.year + 1):
+                try:
+                    dia = nasc.replace(year=ano)
+                except ValueError:
+                    dia = date(ano, 3, 1)
+                if 0 <= (dia - inicio).days <= 7:
+                    aniversariantes.append({"id": c["id"], "nome": c["nome"], "whatsapp": c["whatsapp"], "dia": dia.isoformat(),
+                                            "idade": ano - nasc.year})
+                    break
+        aniversariantes.sort(key=lambda a: a["dia"])
+        return {
+            "visitantes_semana": conta("SELECT COUNT(*) AS n FROM igreja_jornada WHERE empresa_id=? AND primeira_visita>=?" + fe, (e, semana, *pe)),
+            "sem_retorno": conta("SELECT COUNT(*) AS n FROM igreja_jornada WHERE empresa_id=? AND etapa<>'integrado' AND proximo_contato<?" + fe, (e, hoje, *pe)),
+            "integrados_mes": conta("SELECT COUNT(*) AS n FROM igreja_jornada WHERE empresa_id=? AND etapa='integrado' AND atualizado_em>=?" + fe, (e, mes, *pe)),
+            "oracoes_abertas": conta("SELECT COUNT(*) AS n FROM igreja_oracoes WHERE empresa_id=? AND status IN ('aberto','orando')" + filtro_privado, (e, *pe)),
+            "testemunhos_mes": conta("SELECT COUNT(*) AS n FROM igreja_oracoes WHERE empresa_id=? AND status='respondido' AND respondido_em>=?" + filtro_privado, (e, mes, *pe)),
+            "etapas": [{"etapa": k, "nome": n, "total": etapas[k]} for k, n in ETAPAS],
+            "aniversariantes": aniversariantes[:20],
+            "por_unidade": self._resumo_por_unidade(e, escopo, hoje, semana),
+        }
+
+    def _resumo_por_unidade(self, empresa_id: str, escopo: set[str] | None, hoje: str, semana: str) -> list[dict]:
+        """Uma linha por parte logo abaixo do alcance de quem olha (a Sede vê os setores/campos; o pastor do campo vê as igrejas)."""
+        unidades = [u for u in self._unidades_empresa(empresa_id) if u["ativa"]]
+        if not unidades:
+            return []
+        if escopo is TODA_A_SEDE:
+            topo = sorted((u for u in unidades if not u["pai_id"]), key=lambda u: (u["tipo"] != "setor", u["nome"]))
+        else:
+            topo = [u for u in unidades if u["id"] in escopo and u["pai_id"] not in escopo]
+            if len(topo) == 1:  # lotado numa parte só: mostra as partes de dentro dela
+                filhos = [u for u in unidades if u["pai_id"] == topo[0]["id"]]
+                topo = filhos or []
+        linhas = self.banco.todos("SELECT unidade_id, etapa, primeira_visita, proximo_contato FROM igreja_jornada WHERE empresa_id=?", (empresa_id,))
+        saida = []
+        for u in topo:
+            sub = self._descendentes(unidades, u["id"])
+            minhas = [l for l in linhas if l["unidade_id"] in sub]
+            saida.append({"id": u["id"], "nome": u["nome"], "tipo": u["tipo"], "responsavel": u["responsavel_nome"],
+                          "acompanhamento": sum(1 for l in minhas if l["etapa"] != "integrado"),
+                          "visitantes_semana": sum(1 for l in minhas if (l["primeira_visita"] or "") >= semana),
+                          "sem_retorno": sum(1 for l in minhas if l["etapa"] != "integrado" and l["proximo_contato"] and l["proximo_contato"] < hoje)})
+        return saida
+
+    def gerar_alertas_igreja(self, empresa_id: str) -> None:
+        hoje = date.today().isoformat()
+        for j in self.banco.todos(
+                """SELECT j.id, j.proximo_contato, c.nome FROM igreja_jornada j JOIN contatos c ON c.id=j.contato_id
+                   WHERE j.empresa_id=? AND j.etapa<>'integrado' AND j.proximo_contato IS NOT NULL AND j.proximo_contato<?""",
+                (empresa_id, hoje)):
+            self._novo_alerta(empresa_id, f"consolidacao:{j['id']}:{j['proximo_contato']}", "visitante", "atencao", "Visitante sem retorno",
+                              f"{j['nome']} estava para receber contato em {datetime.fromisoformat(j['proximo_contato']).strftime('%d/%m')}.", j["id"])
+
+
+def povoar_demo_igreja(p, empresa_id: str) -> None:
+    """Deixa a empresa de demonstração com cara de igreja (só na edição Church)."""
+    from .nucleo import Ator
+
+    b = p.banco
+    sistema = Ator("sistema", "Sistema", "", "admin", empresa_id)
+    for antigo, novo in (("Comercial", "Recepção"), ("Suporte", "Aconselhamento"), ("Financeiro", "Secretaria")):
+        b.executar("UPDATE filas SET nome=? WHERE empresa_id=? AND nome=?", (novo, empresa_id, antigo))
+    for antigo, novo, cat in (("Visita técnica", "Visita pastoral", "Cuidado"), ("Manutenção", "Aconselhamento", "Cuidado"),
+                              ("Consultoria", "Batismo", "Celebração")):
+        b.executar("UPDATE servicos SET nome=?, categoria=?, preco_centavos=0 WHERE empresa_id=? AND nome=?", (novo, cat, empresa_id, antigo))
+    for antigo, novo in (("Bom dia! Preciso de um orçamento para o serviço.", "Bom dia! Gostaria de marcar uma visita pastoral."),
+                         ("Pode verificar meu pedido?", "Preciso de oração pela minha família."),
+                         ("Olá, gostaria de saber os preços.", "Olá! Qual o horário dos cultos?"),
+                         ("Recebi a nota fiscal, obrigado.", "Obrigado pelo acolhimento no domingo!")):
+        b.executar("UPDATE mensagens SET texto=? WHERE texto=? AND conversa_id IN (SELECT id FROM conversas WHERE empresa_id=?)", (novo, antigo, empresa_id))
+    b.executar("UPDATE agenda SET titulo='Visita pastoral' WHERE empresa_id=? AND titulo='Visita técnica'", (empresa_id,))
+    for f in b.todos("SELECT id, etapas FROM fluxos WHERE empresa_id=?", (empresa_id,)):
+        etapas = f["etapas"]
+        for antigo, novo in (("Certo! Um consultor do Comercial vai te atender.", "Que bom! Alguém da Recepção vai falar com você."),
+                             ("Vou te passar para o Suporte.", "Vou te passar para o Aconselhamento."),
+                             ("Vou te passar para o Financeiro.", "Vou te passar para a Secretaria."),
+                             ("Como podemos ajudar?", "Como a igreja pode te ajudar?"),
+                             ('"Orçamento"', '"Visita"'), ('"Suporte"', '"Aconselhamento"'), ('"Financeiro"', '"Secretaria"'),
+                             ('"orçamento"', '"visita"')):
+            etapas = etapas.replace(antigo, novo)
+        b.executar("UPDATE fluxos SET etapas=? WHERE id=?", (etapas, f["id"]))
+    b.executar("UPDATE empresas SET nome='Igreja Esperança (demonstração)' WHERE id=?", (empresa_id,))
+    b.executar("UPDATE config_empresa SET nome_sistema='RMD Atendimento Church', mensagem_inicial=? WHERE empresa_id=?",
+               ("Olá! Que bom falar com você. Como a igreja pode te ajudar?", empresa_id))
+    # organização de exemplo: capital em setores, interior em campos
+    agora_ = agora()
+    def unidade(nome, tipo, pai=None, pastor=None):
+        uid = novo_id()
+        b.executar("""INSERT INTO igreja_unidades(id, empresa_id, pai_id, tipo, nome, responsavel_nome, ativa, criado_em, atualizado_em)
+                      VALUES (?,?,?,?,?,?,1,?,?)""", (uid, empresa_id, pai, tipo, nome, pastor, agora_, agora_))
+        return uid
+    setor1 = unidade("Setor 1", "setor", None, "Pr. Paulo Mendes")
+    unidade("Setor 2", "setor", None, "Pr. Marcos Vieira")
+    campo = unidade("Campo de Itabaiana", "campo", None, "Pr. André Lima")
+    central = unidade("Igreja Central", "igreja", setor1, "Pr. Paulo Mendes")
+    bairro = unidade("Igreja Bairro Novo", "igreja", setor1, "Presb. Carlos")
+    igreja_norte = unidade("Igreja de Itabaiana", "igreja", campo, "Pr. André Lima")
+    for perfil, onde in (("supervisor", setor1), ("atendente", central)):
+        u = b.um("SELECT id FROM usuarios WHERE empresa_id=? AND perfil=? ORDER BY criado_em LIMIT 1", (empresa_id, perfil))
+        if u:
+            b.executar("INSERT OR IGNORE INTO igreja_lotacoes(id, empresa_id, usuario_id, unidade_id, atualizado_em) VALUES (?,?,?,?,?)",
+                       (novo_id(), empresa_id, u["id"], onde, agora_))
+    onde_pessoa = {"Lucas Ferreira": central, "Beatriz Rocha": central, "Família Nascimento": bairro, "Rafael Costa": igreja_norte,
+                   "Juliana Melo": central}
+    onde_oracao = {"Ana Paula": central, "José Almeida": igreja_norte, "—": central, "Pedro Lima": central}
+    hoje = date.today()
+    pessoas = (
+        ("Lucas Ferreira", "79991110001", "novo", 1, "convite", "Irmã Joana", 1, None),
+        ("Beatriz Rocha", "79991110002", "contatado", 6, "redes_sociais", None, 0, -2),
+        ("Família Nascimento", "79991110003", "retornou", 14, "familia", "Pr. Marcos", 1, 3),
+        ("Rafael Costa", "79991110004", "grupo", 30, "evento", None, 0, 5),
+        ("Juliana Melo", "79991110005", "integrado", 60, "convite", "Carla Souza", 0, None),
+    )
+    for nome, tel, etapa, dias, como, convidado, visita, prox in pessoas:
+        contato = p._criar_contato(empresa_id, {"nome": nome, "telefone": tel, "tags": ["visitante"]})
+        nasc = (hoje + timedelta(days=2)).replace(year=1994).isoformat() if nome == "Beatriz Rocha" else None
+        if nasc:
+            b.executar("UPDATE contatos SET dados=? WHERE id=?", (json.dumps({"nascimento": nasc}), contato["id"]))
+        p._nova_jornada(empresa_id, contato["id"], {
+            "etapa": etapa, "primeira_visita": (hoje - timedelta(days=dias)).isoformat(), "como_conheceu": como,
+            "convidado_por": convidado, "quer_visita": visita, "responsavel_id": None, "observacao": None, "unidade_id": onde_pessoa[nome],
+            "proximo_contato": None if etapa == "integrado" else (hoje + timedelta(days=prox if prox is not None else 1)).isoformat()})
+    for nome, pedido, cat, priv, status, vezes, anon in (
+        ("Ana Paula", "Pela saúde da minha mãe, que vai fazer uma cirurgia na sexta.", "saude", "equipe", "orando", 12, 0),
+        ("José Almeida", "Por uma porta de emprego.", "trabalho", "equipe", "aberto", 3, 0),
+        ("—", "Pela restauração do meu casamento.", "familia", "pastoral", "aberto", 0, 1),
+        ("Pedro Lima", "Gratidão: consegui a vaga que pedi em oração!", "gratidao", "equipe", "respondido", 25, 0),
+    ):
+        oid = p._nova_oracao(empresa_id, {"nome": nome, "telefone": None, "pedido": pedido, "categoria": cat, "privacidade": priv,
+                                          "status": status, "anonimo": anon, "quer_contato": 0,
+                                          "testemunho": "Deus respondeu! Começo segunda-feira." if status == "respondido" else None,
+                                          "unidade_id": onde_oracao[nome]}, None, "equipe")
+        b.executar("UPDATE igreja_oracoes SET vezes_orado=?, respondido_em=CASE WHEN status='respondido' THEN ? END WHERE id=?",
+                   (vezes, datetime.now(timezone.utc).isoformat(timespec="seconds"), oid))
+    _ = sistema

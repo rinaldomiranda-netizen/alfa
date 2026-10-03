@@ -1,0 +1,873 @@
+"""Servidor web do RMD Atendimento (biblioteca padrão do Python).
+
+Como rodar separado do ALFA:
+    python atendimento_web/app.py              (abre em http://127.0.0.1:8080)
+    python atendimento_web/app.py --porta 9000
+
+Segurança:
+- Por padrão escuta só neste computador (127.0.0.1). Para abrir para a
+  rede/internet é preciso dizer isso de propósito (--host 0.0.0.0 ou
+  variável HOST) — e usar HTTPS na frente (ex.: proxy/túnel).
+- Login com sessão em cookie HttpOnly/SameSite=Strict; toda ação que
+  muda dados exige o cabeçalho X-RMD (bloqueia CSRF).
+- A empresa sempre vem da sessão do usuário, nunca do navegador.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import mimetypes
+import os
+import re
+import secrets
+import sys
+import threading
+import time
+import traceback
+from http import HTTPStatus
+from http.cookies import SimpleCookie
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+RAIZ = Path(__file__).resolve().parent.parent
+if str(RAIZ) not in sys.path:
+    sys.path.insert(0, str(RAIZ))
+
+from atendimento_web import recepcao  # noqa: E402
+from modules.atendimento.plataforma import (  # noqa: E402
+    VERSAO, ErroNegocio, NaoAutenticado, Plataforma, SemPermissao,
+)
+from modules.atendimento.plataforma import permissoes  # noqa: E402
+from modules.atendimento.plataforma.db import pasta_dados  # noqa: E402
+from modules.atendimento.plataforma.nucleo import NOMES_TEMAS  # noqa: E402
+from modules.atendimento.plataforma.seguranca import LimiteChamadas  # noqa: E402
+
+BASE = Path(__file__).resolve().parent
+STATIC = BASE / "static"
+HOST = os.getenv("HOST", "127.0.0.1")
+PORT = int(os.getenv("PORT", "8080"))
+# Edição: "church" = RMD Atendimento Church (mesmo sistema, com o nome e as palavras da igreja).
+EDICAO = "church" if os.getenv("RMD_EDICAO", "").strip().lower() == "church" else ""
+NOME_EDICAO = "RMD Atendimento Church" if EDICAO == "church" else "RMD Atendimento"
+ATRAS_DE_PROXY = os.getenv("RMD_ATRAS_DE_PROXY", "") == "1"
+COOKIE = "rmd_sessao"
+LIMITE_CORPO = 2_000_000
+LIMITE_CORPO_BACKUP = 60_000_000
+
+_PLATAFORMA: Plataforma | None = None
+_LOCK = threading.Lock()
+LIMITE_PUBLICO = LimiteChamadas(40)
+LIMITE_API = LimiteChamadas(60)
+LIMITE_LOGIN_IP = LimiteChamadas(20)
+
+
+def plataforma() -> Plataforma:
+    global _PLATAFORMA
+    with _LOCK:
+        if _PLATAFORMA is None:
+            _PLATAFORMA = Plataforma()
+        return _PLATAFORMA
+
+
+def definir_plataforma(nova: Plataforma) -> None:
+    global _PLATAFORMA
+    with _LOCK:
+        _PLATAFORMA = nova
+
+
+class Resposta(Exception):
+    """Atalho para responder algo que não é JSON (arquivo, redirecionamento)."""
+
+    def __init__(self, status: int, corpo: bytes = b"", tipo: str = "text/plain; charset=utf-8", cabecalhos: dict | None = None):
+        super().__init__(status)
+        self.status, self.corpo, self.tipo, self.cabecalhos = status, corpo, tipo, cabecalhos or {}
+
+
+ROTAS: list[tuple[str, re.Pattern, str, str]] = []
+
+
+def rota(metodo: str, caminho: str, acesso: str = "sessao"):
+    """acesso: sessao | publico | api | meta"""
+    partes = re.split(r"(\{\w+\})", caminho)
+    padrao = re.compile("^" + "".join(
+        f"(?P<{p[1:-1]}>[A-Za-z0-9_\\-]+)" if p.startswith("{") else re.escape(p) for p in partes
+    ) + "$")
+
+    def registrar(funcao):
+        ROTAS.append((metodo, padrao, acesso, funcao.__name__[2:]))
+        return funcao
+
+    return registrar
+
+
+def _codigo_primeiro_acesso() -> str:
+    arquivo = pasta_dados() / "primeiro_acesso.txt"
+    arquivo.parent.mkdir(parents=True, exist_ok=True)
+    if not arquivo.exists():
+        arquivo.write_text(secrets.token_hex(4).upper(), encoding="utf-8")
+    return arquivo.read_text(encoding="utf-8").strip()
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "RMDAtendimento"
+    sys_version = ""
+    protocol_version = "HTTP/1.1"
+
+    # ------------------------------------------------------------ infraestrutura
+    def log_message(self, formato: str, *args) -> None:
+        if os.getenv("RMD_LOG_HTTP"):
+            print(f"[HTTP] {self.address_string()} {formato % args}")
+
+    def _seguranca(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; "
+            "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        )
+
+    def _enviar(self, status: int, corpo: bytes, tipo: str, cabecalhos: dict | None = None) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", tipo)
+        self.send_header("Content-Length", str(len(corpo)))
+        self.send_header("Cache-Control", "no-store")
+        self._seguranca()
+        for chave, valor in (cabecalhos or {}).items():
+            self.send_header(chave, valor)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(corpo)
+
+    def _json(self, dados, status: int = 200, cabecalhos: dict | None = None) -> None:
+        self._enviar(status, json.dumps(dados, ensure_ascii=False, default=str).encode("utf-8"), "application/json; charset=utf-8", cabecalhos)
+
+    def _ip(self) -> str:
+        # Atrás de um proxy HTTPS (Railway, túnel) todo pedido chega do IP do
+        # proxy; só então vale o IP informado por ele. Sem a variável, o
+        # cabeçalho é ignorado (senão qualquer um poderia inventar um IP).
+        if ATRAS_DE_PROXY:
+            real = (self.headers.get("X-Real-IP") or "").strip()
+            encaminhado = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            if real or encaminhado:
+                return real or encaminhado
+        return self.client_address[0] if self.client_address else "?"
+
+    def _token(self) -> str | None:
+        bruto = self.headers.get("Cookie")
+        if not bruto:
+            return None
+        cookie = SimpleCookie()
+        try:
+            cookie.load(bruto)
+        except Exception:  # noqa: BLE001
+            return None
+        return cookie[COOKIE].value if COOKIE in cookie else None
+
+    def _cookie_sessao(self, token: str | None) -> dict:
+        if token is None:
+            return {"Set-Cookie": f"{COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"}
+        seguro = "; Secure" if self.headers.get("X-Forwarded-Proto") == "https" else ""
+        return {"Set-Cookie": f"{COOKIE}={token}; Path=/; Max-Age=43200; HttpOnly; SameSite=Strict{seguro}"}
+
+    def _corpo_bruto(self, limite: int) -> bytes:
+        tamanho = int(self.headers.get("Content-Length") or 0)
+        if tamanho > limite:
+            raise ErroNegocio("Conteúdo grande demais.")
+        return self.rfile.read(tamanho) if tamanho > 0 else b""
+
+    def _corpo(self, limite: int = LIMITE_CORPO) -> dict:
+        bruto = self._corpo_bruto(limite)
+        if not bruto:
+            return {}
+        try:
+            dados = json.loads(bruto.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise ErroNegocio("JSON inválido.") from None
+        if not isinstance(dados, dict):
+            raise ErroNegocio("JSON inválido.")
+        return dados
+
+    # ------------------------------------------------------------ despacho
+    def do_GET(self):
+        self._despachar("GET")
+
+    def do_HEAD(self):
+        self._despachar("GET")
+
+    def do_POST(self):
+        self._despachar("POST")
+
+    def do_PUT(self):
+        self._despachar("PUT")
+
+    def _despachar(self, metodo: str) -> None:
+        url = urlparse(self.path)
+        self.consulta = {k: v[0] for k, v in parse_qs(url.query).items()}
+        caminho = url.path
+        try:
+            if metodo == "GET" and (caminho.startswith("/static/") or caminho in ("/", "/index.html", "/chat", "/recepcao", "/favicon.ico")):
+                return self._estatico(caminho)
+            for metodo_rota, padrao, acesso, nome in ROTAS:
+                achado = padrao.match(caminho)
+                if metodo_rota != metodo or not achado:
+                    continue
+                if metodo != "GET" and acesso in ("sessao", "publico") and self.headers.get("X-RMD") != "1":
+                    return self._json({"erro": "Requisição recusada (proteção CSRF)."}, 403)
+                self.ator = None
+                if acesso == "sessao":
+                    self.ator = plataforma().sessao(self._token())
+                    if self.ator is None and nome not in ("sessao", "entrar", "primeiro_acesso", "entrar_link", "saude"):
+                        return self._json({"erro": "Sua sessão terminou. Entre de novo.", "sessao": False}, 401)
+                    if self.ator and self.ator.trocar_senha and nome not in ("sessao", "trocar_senha", "sair"):
+                        return self._json({"erro": "Troque a sua senha temporária antes de continuar.", "trocar_senha": True}, 403)
+                resultado = getattr(self, "r_" + nome)(**achado.groupdict())
+                if resultado is not None:
+                    self._json(resultado)
+                return
+            self._json({"erro": "Endereço não encontrado."}, 404)
+        except Resposta as r:
+            self._enviar(r.status, r.corpo, r.tipo, r.cabecalhos)
+        except SemPermissao as erro:
+            self._json({"erro": str(erro)}, 403)
+        except ErroNegocio as erro:
+            self._json({"erro": str(erro)}, getattr(erro, "codigo_http", 400))
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception:  # noqa: BLE001 - nunca mostra detalhes internos para o navegador
+            traceback.print_exc()
+            try:
+                self._json({"erro": "Erro interno. Tente de novo; se continuar, veja o registro do servidor."}, 500)
+            except OSError:
+                pass
+
+    def _estatico(self, caminho: str) -> None:
+        paginas = {"/": "index.html", "/index.html": "index.html", "/chat": "chat.html", "/recepcao": "recepcao.html",
+                   "/favicon.ico": "img/icone.svg"}
+        relativo = paginas.get(caminho) or caminho[len("/static/"):]
+        arquivo = (STATIC / relativo).resolve()
+        if STATIC.resolve() not in arquivo.parents or not arquivo.is_file():
+            return self._json({"erro": "Arquivo não encontrado."}, 404)
+        tipo = mimetypes.guess_type(arquivo.name)[0] or "application/octet-stream"
+        if tipo.startswith("text/") or tipo in ("application/javascript", "image/svg+xml"):
+            tipo += "; charset=utf-8"
+        corpo = arquivo.read_bytes()
+        if EDICAO and arquivo.suffix == ".html":
+            corpo = (corpo.replace(b'<html lang="pt-BR"', f'<html lang="pt-BR" data-edicao="{EDICAO}"'.encode(), 1)
+                     .replace(b"<title>RMD Atendimento", f"<title>{NOME_EDICAO}".encode(), 1)
+                     .replace(b"</head>", b'<script src="/static/js/edicao.js"></script>\n</head>', 1))
+        self._enviar(200, corpo, tipo)
+
+    # ------------------------------------------------------------ helpers
+    def _perfil_publico(self) -> dict:
+        a = self.ator
+        p = plataforma()
+        config = p.obter_config(a.empresa_id) if a.empresa_id else None
+        if config:
+            config = {k: config[k] for k in ("empresa_nome", "empresa_slug", "nome_sistema", "logo", "tema", "cor_destaque", "fuso",
+                                             "mensagem_inicial", "atribuicao_automatica", "pedir_avaliacao", "demonstracao", "plano")}
+        return {
+            "usuario": {"id": a.usuario_id, "nome": a.nome, "email": a.email, "perfil": a.perfil,
+                        "perfil_nome": permissoes.NOMES_PERFIS[a.perfil], "fila_id": a.fila_id, "contato_id": a.contato_id,
+                        "trocar_senha": a.trocar_senha},
+            "empresa": config,
+            "telas": permissoes.telas_do_perfil(a.perfil) if a.empresa_id or a.perfil != "owner" else ["companies", "security"],
+            "permissoes": permissoes.permissoes_do_perfil(a.perfil),
+            "temas": NOMES_TEMAS,
+            "versao": VERSAO,
+            "alertas": p.contar_alertas(a.empresa_id) if a.empresa_id and a.pode("alertas") else 0,
+        }
+
+    # ============================================================ ROTAS
+    @rota("GET", "/api/health", "publico")
+    def r_saude(self):
+        plataforma().banco.um("SELECT 1 AS ok")
+        return {"ok": True, "servico": NOME_EDICAO, "versao": VERSAO, "edicao": EDICAO}
+
+    @rota("GET", "/api/sessao")
+    def r_sessao(self):
+        if self.ator is None:
+            return {"sessao": False, "primeiro_acesso": not plataforma().existe_usuario(), "versao": VERSAO, "edicao": EDICAO}
+        return {"sessao": True, **self._perfil_publico()}
+
+    @rota("POST", "/api/entrar")
+    def r_entrar(self):
+        if not LIMITE_LOGIN_IP.permitir(self._ip()):
+            raise ErroNegocio("Muitas tentativas. Espere um minuto.")
+        dados = self._corpo()
+        token, self.ator = plataforma().entrar(dados.get("email"), dados.get("senha"), self._ip(), self.headers.get("User-Agent"))
+        self._json({"sessao": True, **self._perfil_publico()}, cabecalhos=self._cookie_sessao(token))
+
+    @rota("GET", "/entrar")
+    def r_entrar_link(self):
+        token_unico = self.consulta.get("token", "")
+        try:
+            token, _ = plataforma().entrar_com_token_unico(token_unico, self._ip(), self.headers.get("User-Agent"))
+        except NaoAutenticado as erro:
+            raise Resposta(401, f"<!doctype html><meta charset=utf-8><p style='font-family:sans-serif'>{erro}</p>".encode(), "text/html; charset=utf-8")
+        raise Resposta(303, b"", cabecalhos={"Location": "/", **self._cookie_sessao(token)})
+
+    @rota("POST", "/api/primeiro-acesso")
+    def r_primeiro_acesso(self):
+        p = plataforma()
+        if p.existe_usuario():
+            raise ErroNegocio("O primeiro acesso já foi feito.")
+        dados = self._corpo()
+        if not secrets.compare_digest(str(dados.get("codigo", "")).strip().upper(), _codigo_primeiro_acesso()):
+            raise ErroNegocio("Código de primeiro acesso incorreto (ele aparece na janela do servidor).")
+        empresa = p.criar_empresa(dados.get("empresa") or "Minha empresa", plano=dados.get("plano") or "essencial")
+        p.criar_usuario(None, dados.get("nome"), dados.get("email"), "admin", senha=dados.get("senha"), empresa_id=empresa["id"])
+        token, self.ator = p.entrar(dados.get("email"), dados.get("senha"), self._ip(), self.headers.get("User-Agent"))
+        (pasta_dados() / "primeiro_acesso.txt").unlink(missing_ok=True)
+        if EDICAO:
+            p.salvar_config(self.ator, {"nome_sistema": NOME_EDICAO})
+        self._json({"sessao": True, **self._perfil_publico()}, cabecalhos=self._cookie_sessao(token))
+
+    @rota("POST", "/api/sair")
+    def r_sair(self):
+        plataforma().sair(self._token() or "")
+        self._json({"ok": True}, cabecalhos=self._cookie_sessao(None))
+
+    @rota("POST", "/api/senha")
+    def r_trocar_senha(self):
+        dados = self._corpo()
+        plataforma().alterar_senha(self.ator, dados.get("atual"), dados.get("nova"))
+        return {"ok": True}
+
+    @rota("POST", "/api/presenca")
+    def r_presenca(self):
+        plataforma().definir_presenca(self.ator, self._corpo().get("presenca"))
+        return {"ok": True}
+
+    @rota("POST", "/api/empresa-ativa")
+    def r_empresa_ativa(self):
+        self.ator = plataforma().escolher_empresa(self.ator, self._token(), self._corpo().get("empresa_id") or None)
+        return {"sessao": True, **self._perfil_publico()}
+
+    # ---------------------------------------------------------------- dashboard e conversas
+    @rota("GET", "/api/dashboard")
+    def r_dashboard(self):
+        return plataforma().dashboard(self.ator)
+
+    @rota("GET", "/api/conversas")
+    def r_conversas(self):
+        q = self.consulta
+        return plataforma().listar_conversas(self.ator, q.get("status", ""), q.get("busca", ""), q.get("minhas") == "1")
+
+    @rota("POST", "/api/conversas/nova")
+    def r_conversa_nova(self):
+        dados = self._corpo()
+        return plataforma().iniciar_conversa_ativa(self.ator, dados.get("contato_id"), dados.get("texto"))
+
+    @rota("GET", "/api/conversas/{cid}")
+    def r_conversa(self, cid):
+        return plataforma().obter_conversa(self.ator, cid)
+
+    @rota("POST", "/api/conversas/{cid}/responder")
+    def r_responder(self, cid):
+        return plataforma().responder(self.ator, cid, self._corpo().get("texto"))
+
+    @rota("POST", "/api/conversas/{cid}/assumir")
+    def r_assumir(self, cid):
+        return plataforma().assumir(self.ator, cid)
+
+    @rota("POST", "/api/conversas/{cid}/transferir")
+    def r_transferir(self, cid):
+        dados = self._corpo()
+        return plataforma().transferir(self.ator, cid, dados.get("fila_id") or None, dados.get("responsavel_id") or None)
+
+    @rota("POST", "/api/conversas/{cid}/resolver")
+    def r_resolver(self, cid):
+        return plataforma().resolver(self.ator, cid)
+
+    # ---------------------------------------------------------------- nomes, filas, equipe
+    @rota("GET", "/api/contatos")
+    def r_contatos(self):
+        return plataforma().listar_contatos(self.ator, self.consulta.get("busca", ""), self.consulta.get("tag", ""))
+
+    @rota("POST", "/api/contatos")
+    def r_contato_criar(self):
+        return plataforma().criar_contato(self.ator, self._corpo())
+
+    @rota("GET", "/api/contatos/{cid}")
+    def r_contato(self, cid):
+        return plataforma().obter_contato(self.ator, cid)
+
+    @rota("PUT", "/api/contatos/{cid}")
+    def r_contato_editar(self, cid):
+        return plataforma().editar_contato(self.ator, cid, self._corpo())
+
+    @rota("POST", "/api/contatos/{cid}/anonimizar")
+    def r_contato_anonimizar(self, cid):
+        return plataforma().anonimizar_contato(self.ator, cid)
+
+    @rota("GET", "/api/filas")
+    def r_filas(self):
+        return plataforma().listar_filas(self.ator)
+
+    @rota("POST", "/api/filas")
+    def r_fila_criar(self):
+        return plataforma().salvar_fila(self.ator, self._corpo())
+
+    @rota("PUT", "/api/filas/{fid}")
+    def r_fila_editar(self, fid):
+        return plataforma().salvar_fila(self.ator, self._corpo(), fid)
+
+    @rota("GET", "/api/equipe")
+    def r_equipe(self):
+        return plataforma().equipe(self.ator)
+
+    # ---------------------------------------------------------------- serviços, orçamentos, agenda
+    @rota("GET", "/api/servicos")
+    def r_servicos(self):
+        return plataforma().listar_servicos(self.ator, self.consulta.get("ativos") == "1")
+
+    @rota("POST", "/api/servicos")
+    def r_servico_criar(self):
+        return plataforma().salvar_servico(self.ator, self._corpo())
+
+    @rota("PUT", "/api/servicos/{sid}")
+    def r_servico_editar(self, sid):
+        return plataforma().salvar_servico(self.ator, self._corpo(), sid)
+
+    @rota("GET", "/api/orcamentos")
+    def r_orcamentos(self):
+        return plataforma().listar_orcamentos(self.ator, self.consulta.get("status", ""), self.consulta.get("busca", ""))
+
+    @rota("POST", "/api/orcamentos")
+    def r_orcamento_criar(self):
+        return plataforma().salvar_orcamento(self.ator, self._corpo())
+
+    @rota("GET", "/api/orcamentos/{oid}")
+    def r_orcamento(self, oid):
+        return plataforma().obter_orcamento(self.ator, oid)
+
+    @rota("PUT", "/api/orcamentos/{oid}")
+    def r_orcamento_editar(self, oid):
+        return plataforma().salvar_orcamento(self.ator, self._corpo(), oid)
+
+    @rota("POST", "/api/orcamentos/{oid}/status")
+    def r_orcamento_status(self, oid):
+        return plataforma().mudar_status_orcamento(self.ator, oid, self._corpo().get("status"))
+
+    @rota("POST", "/api/orcamentos/{oid}/enviar")
+    def r_orcamento_enviar(self, oid):
+        return plataforma().enviar_orcamento(self.ator, oid)
+
+    @rota("GET", "/orcamentos/{oid}/imprimir")
+    def r_orcamento_imprimir(self, oid):
+        raise Resposta(200, plataforma().html_impressao_orcamento(self.ator, oid).encode("utf-8"), "text/html; charset=utf-8")
+
+    @rota("GET", "/api/agenda")
+    def r_agenda(self):
+        return plataforma().listar_agenda(self.ator, self.consulta.get("de"), self.consulta.get("ate"))
+
+    @rota("POST", "/api/agenda")
+    def r_agenda_criar(self):
+        dados = self._corpo()
+        return plataforma().salvar_agendamento(self.ator, dados, forcar=bool(dados.get("forcar")))
+
+    @rota("PUT", "/api/agenda/{aid}")
+    def r_agenda_editar(self, aid):
+        dados = self._corpo()
+        return plataforma().salvar_agendamento(self.ator, dados, aid, forcar=bool(dados.get("forcar")))
+
+    # ---------------------------------------------------------------- fluxos
+    @rota("GET", "/api/fluxos")
+    def r_fluxos(self):
+        return plataforma().listar_fluxos(self.ator)
+
+    @rota("POST", "/api/fluxos")
+    def r_fluxo_criar(self):
+        return plataforma().salvar_fluxo(self.ator, self._corpo())
+
+    @rota("POST", "/api/fluxos/simular")
+    def r_fluxo_simular_livre(self):
+        dados = self._corpo()
+        return plataforma().simular_fluxo(self.ator, None, dados.get("etapas") or [], dados.get("entradas") or [])
+
+    @rota("GET", "/api/fluxos/{fid}")
+    def r_fluxo(self, fid):
+        return plataforma().obter_fluxo(self.ator, fid)
+
+    @rota("PUT", "/api/fluxos/{fid}")
+    def r_fluxo_editar(self, fid):
+        return plataforma().salvar_fluxo(self.ator, self._corpo(), fid)
+
+    @rota("POST", "/api/fluxos/{fid}/simular")
+    def r_fluxo_simular(self, fid):
+        return plataforma().simular_fluxo(self.ator, fid, None, self._corpo().get("entradas") or [])
+
+    @rota("POST", "/api/fluxos/{fid}/publicar")
+    def r_fluxo_publicar(self, fid):
+        return plataforma().publicar_fluxo(self.ator, fid, bool(self._corpo().get("publicar", True)))
+
+    # ---------------------------------------------------------------- WhatsApp
+    @rota("GET", "/api/whatsapp")
+    def r_whatsapp(self):
+        return plataforma().whatsapp_painel(self.ator)
+
+    @rota("POST", "/api/whatsapp/canais")
+    def r_whatsapp_criar(self):
+        return plataforma().salvar_canal_whatsapp(self.ator, self._corpo())
+
+    @rota("PUT", "/api/whatsapp/canais/{wid}")
+    def r_whatsapp_editar(self, wid):
+        return plataforma().salvar_canal_whatsapp(self.ator, self._corpo(), wid)
+
+    @rota("POST", "/api/whatsapp/canais/{wid}/testar")
+    def r_whatsapp_testar(self, wid):
+        dados = self._corpo()
+        return plataforma().testar_whatsapp(self.ator, wid, dados.get("numero"), dados.get("texto") or None)
+
+    @rota("GET", "/webhooks/whatsapp", "meta")
+    def r_meta_verificar(self):
+        q = self.consulta
+        desafio = plataforma().whatsapp_verificar_webhook(q.get("hub.mode", ""), q.get("hub.verify_token", ""), q.get("hub.challenge", ""))
+        if desafio is None:
+            raise Resposta(403, b"forbidden")
+        raise Resposta(200, desafio.encode("utf-8"))
+
+    @rota("POST", "/webhooks/whatsapp", "meta")
+    def r_meta_receber(self):
+        corpo = self._corpo_bruto(LIMITE_CORPO)
+        try:
+            plataforma().whatsapp_receber(corpo, self.headers.get("X-Hub-Signature-256"))
+        except NaoAutenticado:
+            raise Resposta(401, b"assinatura invalida") from None
+        raise Resposta(200, b"ok")
+
+    # ---------------------------------------------------------------- API pública V1 e webhooks
+    def _chave(self, escopo: str) -> dict:
+        autorizacao = self.headers.get("Authorization", "")
+        chave = autorizacao[7:].strip() if autorizacao.lower().startswith("bearer ") else ""
+        if not LIMITE_API.permitir(chave[:16] or self._ip()):
+            raise ErroNegocio("Limite de 60 chamadas por minuto atingido.")
+        return plataforma().autenticar_chave_api(chave, escopo)
+
+    @rota("GET", "/api/v1/nomes", "api")
+    def r_v1_nomes(self):
+        return {"itens": plataforma().api_listar_nomes(self._chave("names:read"), self.consulta.get("busca", ""))}
+
+    @rota("POST", "/api/v1/nomes", "api")
+    def r_v1_nome_criar(self):
+        return plataforma().api_criar_nome(self._chave("names:write"), self._corpo())
+
+    @rota("POST", "/api/v1/mensagens", "api")
+    def r_v1_mensagem(self):
+        chave = self._chave("messages:write")
+        dados = self._corpo()
+        return plataforma().api_enviar_mensagem(chave, dados.get("telefone"), dados.get("texto"))
+
+    @rota("GET", "/api/v1/atendimentos", "api")
+    def r_v1_atendimentos(self):
+        chave = self._chave("conversations:read")
+        return {"itens": plataforma().banco.todos(
+            "SELECT id, numero, canal, status, criada_em, resolvida_em, avaliacao FROM conversas WHERE empresa_id=? ORDER BY criada_em DESC LIMIT 200",
+            (chave["empresa_id"],))}
+
+    @rota("GET", "/api/integracoes")
+    def r_integracoes(self):
+        from modules.atendimento.plataforma.canais import ESCOPOS_API, EVENTOS, NOMES_ESCOPOS
+        p = plataforma()
+        return {"chaves": p.listar_chaves_api(self.ator), "webhooks": p.listar_webhooks(self.ator),
+                "escopos": [{"id": e, "nome": NOMES_ESCOPOS[e]} for e in ESCOPOS_API], "eventos": list(EVENTOS)}
+
+    @rota("POST", "/api/integracoes/chaves")
+    def r_chave_criar(self):
+        dados = self._corpo()
+        return plataforma().criar_chave_api(self.ator, dados.get("nome"), dados.get("escopos") or [], bool(dados.get("dry_run", True)))
+
+    @rota("PUT", "/api/integracoes/chaves/{kid}")
+    def r_chave_alterar(self, kid):
+        dados = self._corpo()
+        plataforma().alterar_chave_api(self.ator, kid, dados.get("ativa"), dados.get("dry_run"))
+        return {"ok": True}
+
+    @rota("POST", "/api/integracoes/webhooks")
+    def r_webhook_criar(self):
+        dados = self._corpo()
+        return plataforma().criar_webhook(self.ator, dados.get("url"), dados.get("eventos") or [], bool(dados.get("assinar", True)))
+
+    @rota("PUT", "/api/integracoes/webhooks/{wid}")
+    def r_webhook_alterar(self, wid):
+        plataforma().alterar_webhook(self.ator, wid, bool(self._corpo().get("ativo")))
+        return {"ok": True}
+
+    @rota("POST", "/api/integracoes/webhooks/{wid}/testar")
+    def r_webhook_testar(self, wid):
+        return plataforma().testar_webhook(self.ator, wid)
+
+    # ---------------------------------------------------------------- alertas e relatórios
+    @rota("GET", "/api/alertas")
+    def r_alertas(self):
+        return plataforma().listar_alertas(self.ator, self.consulta.get("nao_lidos") == "1")
+
+    @rota("POST", "/api/alertas/lidos")
+    def r_alertas_lidos(self):
+        return {"marcados": plataforma().marcar_alertas(self.ator)}
+
+    @rota("POST", "/api/alertas/{aid}/lido")
+    def r_alerta_lido(self, aid):
+        return {"marcados": plataforma().marcar_alertas(self.ator, aid)}
+
+    @rota("GET", "/api/relatorios")
+    def r_relatorios(self):
+        return plataforma().relatorio(self.ator, int(self.consulta.get("dias") or 30))
+
+    @rota("GET", "/api/relatorios/{tipo}.csv")
+    def r_relatorio_csv(self, tipo):
+        texto = plataforma().relatorio_csv(self.ator, tipo, int(self.consulta.get("dias") or 30))
+        raise Resposta(200, texto.encode("utf-8"), "text/csv; charset=utf-8",
+                       {"Content-Disposition": f'attachment; filename="relatorio-{tipo}.csv"'})
+
+    # ---------------------------------------------------------------- usuários, backup, plano, segurança, config
+    @rota("GET", "/api/usuarios")
+    def r_usuarios(self):
+        return {"usuarios": plataforma().listar_usuarios(self.ator),
+                "perfis": [{"id": p, "nome": permissoes.NOMES_PERFIS[p]} for p in permissoes.perfis_que_pode_criar(self.ator.perfil)],
+                "matriz": {p: permissoes.permissoes_do_perfil(p) for p in permissoes.PERFIS}}
+
+    @rota("POST", "/api/usuarios")
+    def r_usuario_criar(self):
+        d = self._corpo()
+        usuario, temporaria = plataforma().criar_usuario(self.ator, d.get("nome"), d.get("email"), d.get("perfil"),
+                                                         d.get("senha") or None, d.get("fila_id") or None, d.get("contato_id") or None)
+        return {"usuario": usuario, "senha_temporaria": temporaria}
+
+    @rota("PUT", "/api/usuarios/{uid}")
+    def r_usuario_editar(self, uid):
+        return plataforma().editar_usuario(self.ator, uid, self._corpo())
+
+    @rota("POST", "/api/usuarios/{uid}/senha")
+    def r_usuario_senha(self, uid):
+        return {"senha_temporaria": plataforma().redefinir_senha(self.ator, uid)}
+
+    @rota("GET", "/api/backups")
+    def r_backups(self):
+        return plataforma().listar_backups(self.ator)
+
+    @rota("POST", "/api/backups")
+    def r_backup_criar(self):
+        return plataforma().criar_backup(self.ator)
+
+    @rota("GET", "/api/backups/{bid}/baixar")
+    def r_backup_baixar(self, bid):
+        nome, conteudo = plataforma().baixar_backup(self.ator, bid)
+        raise Resposta(200, conteudo, "application/json", {"Content-Disposition": f'attachment; filename="{nome}"'})
+
+    @rota("POST", "/api/backups/previa")
+    def r_backup_previa(self):
+        return plataforma().previa_restauracao(self.ator, self._corpo(LIMITE_CORPO_BACKUP))
+
+    @rota("POST", "/api/backups/restaurar")
+    def r_backup_restaurar(self):
+        return plataforma().restaurar_backup(self.ator, self._corpo(LIMITE_CORPO_BACKUP))
+
+    @rota("GET", "/api/plano")
+    def r_plano(self):
+        return plataforma().plano(self.ator)
+
+    @rota("GET", "/api/seguranca")
+    def r_seguranca(self):
+        p = plataforma()
+        return {"sessoes": p.minhas_sessoes(self.ator, self._token()),
+                "auditoria": p.listar_auditoria(self.ator, 100) if self.ator.pode("seguranca", "auditoria") else None,
+                "servidor": {"endereco": f"{self.server.server_address[0]}:{self.server.server_address[1]}",
+                             "somente_este_computador": self.server.server_address[0] in ("127.0.0.1", "::1", "localhost")}}
+
+    @rota("POST", "/api/seguranca/sessoes/{sid}/encerrar")
+    def r_sessao_encerrar(self, sid):
+        plataforma().encerrar_sessao(self.ator, sid)
+        return {"ok": True}
+
+    @rota("GET", "/api/config")
+    def r_config(self):
+        self.ator.exigir("config", "ver")
+        return plataforma().obter_config(self.ator.empresa)
+
+    @rota("PUT", "/api/config")
+    def r_config_salvar(self):
+        plataforma().salvar_config(self.ator, self._corpo())
+        return {"sessao": True, **self._perfil_publico()}
+
+    @rota("GET", "/api/empresas")
+    def r_empresas(self):
+        return plataforma().listar_empresas(self.ator)
+
+    @rota("POST", "/api/empresas")
+    def r_empresa_criar(self):
+        d = self._corpo()
+        p = plataforma()
+        empresa = p.criar_empresa(d.get("nome"), d.get("plano") or "essencial", ator=self.ator)
+        resposta = {"empresa": empresa, "admin": None}
+        if d.get("admin_email"):
+            usuario, temporaria = p.criar_usuario(None, d.get("admin_nome") or "Administrador", d.get("admin_email"), "admin",
+                                                  empresa_id=empresa["id"])
+            p.auditar(self.ator, "usuario.criar", usuario["id"], {"perfil": "admin"}, empresa_id=empresa["id"])
+            resposta["admin"] = {"usuario": usuario, "senha_temporaria": temporaria}
+        return resposta
+
+    @rota("PUT", "/api/empresas/{eid}")
+    def r_empresa_editar(self, eid):
+        return plataforma().editar_empresa(self.ator, eid, self._corpo())
+
+    # ---------------------------------------------------------------- portal do cliente
+    @rota("GET", "/api/portal")
+    def r_portal(self):
+        return plataforma().portal_resumo(self.ator)
+
+    @rota("GET", "/api/portal/conversas/{cid}")
+    def r_portal_conversa(self, cid):
+        return plataforma().portal_conversa(self.ator, cid)
+
+    @rota("POST", "/api/portal/mensagens")
+    def r_portal_mensagem(self):
+        return plataforma().portal_enviar(self.ator, self._corpo().get("texto"))
+
+    @rota("GET", "/api/portal/orcamentos/{oid}")
+    def r_portal_orcamento(self, oid):
+        return plataforma().obter_orcamento(self.ator, oid, portal=True)
+
+    @rota("POST", "/api/portal/orcamentos/{oid}/decisao")
+    def r_portal_decisao(self, oid):
+        return plataforma().portal_decidir_orcamento(self.ator, oid, bool(self._corpo().get("aprovar")))
+
+    # ---------------------------------------------------------------- chat do site (visitante)
+    def _limite_publico(self):
+        if not LIMITE_PUBLICO.permitir(self._ip()):
+            raise ErroNegocio("Muitas mensagens em pouco tempo. Espere um pouco.")
+
+    @rota("GET", "/api/publico/{slug}/empresa", "publico")
+    def r_publico_empresa(self, slug):
+        p = plataforma()
+        empresa = p.empresa_por_slug(slug)
+        if not empresa:
+            raise ErroNegocio("Empresa não encontrada.")
+        c = p.obter_config(empresa["id"])
+        return {k: c[k] for k in ("empresa_nome", "nome_sistema", "logo", "tema", "cor_destaque")}
+
+    @rota("POST", "/api/publico/{slug}/conversas", "publico")
+    def r_publico_iniciar(self, slug):
+        self._limite_publico()
+        d = self._corpo()
+        return plataforma().publico_iniciar(slug, d.get("nome"), d.get("telefone"), d.get("email"), d.get("texto"))
+
+    @rota("GET", "/api/publico/conversas/{token}", "publico")
+    def r_publico_estado(self, token):
+        return plataforma().publico_estado(token, self.consulta.get("depois"))
+
+    @rota("POST", "/api/publico/conversas/{token}/mensagens", "publico")
+    def r_publico_enviar(self, token):
+        self._limite_publico()
+        return plataforma().publico_enviar(token, self._corpo().get("texto"))
+
+    # ---------------------------------------------------------------- recepção por roteiro (protocolo antigo)
+    def _recepcao(self, funcao, *args):
+        self.ator.exigir("recepcao", "usar")
+        try:
+            return funcao(*args)
+        except recepcao.RecepcaoIndisponivel as erro:
+            raise ErroNegocio(str(erro)) from None
+        except KeyError:
+            raise ErroNegocio("Sessão de recepção inválida.") from None
+
+    @rota("POST", "/api/recepcao/atendimentos")
+    def r_recepcao_iniciar(self):
+        return self._recepcao(recepcao.iniciar, self.ator.empresa)
+
+    @rota("POST", "/api/recepcao/atendimentos/{sid}/mensagens")
+    def r_recepcao_responder(self, sid):
+        texto = str(self._corpo().get("texto", "")).strip()
+        if not texto:
+            raise ErroNegocio("Escreva a resposta.")
+        return self._recepcao(recepcao.responder, sid, self.ator.empresa, texto)
+
+    @rota("POST", "/api/recepcao/atendimentos/{sid}/finalizar")
+    def r_recepcao_finalizar(self, sid):
+        return self._recepcao(recepcao.finalizar, sid, self.ator.empresa)
+
+    @rota("GET", "/api/recepcao/historico")
+    def r_recepcao_historico(self):
+        return {"itens": self._recepcao(recepcao.historico, self.ator.empresa)}
+
+
+# ====================================================================== servidor
+def _rotina(parar: threading.Event) -> None:
+    while not parar.wait(60):
+        try:
+            plataforma().rotina()
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+
+
+class Servidor(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        erro = sys.exc_info()[1]
+        if isinstance(erro, (ConnectionResetError, BrokenPipeError, TimeoutError)):
+            return  # o navegador fechou a conexão no meio: normal, não é erro
+        super().handle_error(request, client_address)
+
+
+def criar_servidor(host: str = HOST, porta: int = PORT) -> ThreadingHTTPServer:
+    servidor = Servidor((host, porta), Handler)
+    servidor.daemon_threads = True
+    parar = threading.Event()
+    servidor.parar_rotina = parar
+    threading.Thread(target=_rotina, args=(parar,), daemon=True, name="RMDAtendimentoRotina").start()
+    return servidor
+
+
+def _primeira_instalacao(p) -> None:
+    """Na primeira vez que o servidor sobe na internet (sem nenhum usuário), cria a conta do dono (owner)
+    e a primeira empresa/igreja. Senha inicial 1234 — o sistema OBRIGA a trocar no primeiro login.
+    Só roda se RMD_OWNER_EMAIL estiver definido; sem isso vale o primeiro acesso por código de sempre."""
+    email = os.getenv("RMD_OWNER_EMAIL", "").strip().lower()
+    if not email or p.existe_usuario():
+        return
+    from modules.atendimento.plataforma import seguranca
+
+    empresa = p.criar_empresa(os.getenv("RMD_PRIMEIRA_EMPRESA") or ("Minha Igreja" if EDICAO else "Minha Empresa"),
+                              plano=os.getenv("RMD_PLANO") or "business")
+    p.criar_usuario(None, os.getenv("RMD_OWNER_NOME") or "Rinaldo", email, "owner")
+    admin_email = os.getenv("RMD_ADMIN_EMAIL", "").strip().lower()
+    if admin_email and admin_email != email:
+        p.criar_usuario(None, os.getenv("RMD_ADMIN_NOME") or "Administrador", admin_email, "admin", empresa_id=empresa["id"])
+    with p.banco.transacao() as c:
+        for e in [email] + ([admin_email] if admin_email and admin_email != email else []):
+            salt = seguranca.gerar_salt()
+            c.execute("UPDATE usuarios SET senha_hash=?, senha_salt=?, trocar_senha=1 WHERE email=?",
+                      (seguranca.hash_senha("1234", salt), salt, e))
+        if EDICAO:
+            c.execute("UPDATE config_empresa SET nome_sistema=? WHERE empresa_id=?", (NOME_EDICAO, empresa["id"]))
+    (pasta_dados() / "primeiro_acesso.txt").unlink(missing_ok=True)
+    print(f"[{NOME_EDICAO}] Primeira instalação: conta do dono {email} (senha inicial 1234 — troca obrigatória no 1º login).")
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="RMD Atendimento")
+    parser.add_argument("--host", default=HOST)
+    parser.add_argument("--porta", type=int, default=PORT)
+    args = parser.parse_args(argv if argv is not None else [])
+    p = plataforma()
+    _primeira_instalacao(p)
+    servidor = criar_servidor(args.host, args.porta)
+    print(f"[{NOME_EDICAO} {VERSAO}] http://{args.host}:{servidor.server_address[1]}")
+    print(f"[RMD Atendimento] dados em: {p.banco.caminho.parent}")
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        print("[RMD Atendimento] ATENÇÃO: aberto para a rede. Use HTTPS na frente (proxy/túnel) antes de expor na internet.")
+    if not p.existe_usuario():
+        print(f"[RMD Atendimento] Primeiro acesso: abra o endereço acima e use o código {_codigo_primeiro_acesso()}")
+    try:
+        servidor.serve_forever()
+    finally:
+        servidor.parar_rotina.set()
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

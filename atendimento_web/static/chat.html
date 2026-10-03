@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="pt-BR" data-tema="alfa">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atendimento</title>
+<link rel="icon" href="/static/img/icone.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="/static/css/chat.css">
+</head>
+<body>
+<div class="chat-publico">
+  <header class="cabecalho" id="cabecalho">
+    <div class="empresa"><div class="logo iniciais" id="logo">…</div>
+      <div><div class="empresa-nome" id="empresa-nome">Carregando…</div><div class="empresa-sub" id="empresa-sub">Atendimento online</div></div></div>
+  </header>
+  <main class="cartao corpo-chat">
+    <form id="inicio" class="formulario" hidden>
+      <p class="suave inteiro">Para começar, diga quem você é. Seus dados são usados só para este atendimento.</p>
+      <div class="campo"><label for="nome">Seu nome</label><input id="nome" required maxlength="120" autocomplete="name"></div>
+      <div class="campo"><label for="telefone">WhatsApp / telefone (opcional)</label><input id="telefone" inputmode="tel" autocomplete="tel"></div>
+      <div class="campo inteiro"><label for="primeira">Como podemos ajudar?</label><textarea id="primeira" rows="2"></textarea></div>
+      <div class="inteiro"><button class="btn primario" type="submit">Começar conversa</button></div>
+      <div class="erro-texto inteiro" id="erro-inicio"></div>
+    </form>
+    <section id="conversa" hidden>
+      <div class="mensagens" id="mensagens"></div>
+      <div class="compositor"><textarea id="texto" rows="1" placeholder="Escreva sua mensagem…"></textarea><button class="btn primario" id="enviar" type="button">Enviar</button></div>
+    </section>
+  </main>
+  <p class="suave rodape-chat">Atendimento por RMD Atendimento</p>
+</div>
+<div class="toasts" id="toasts"></div>
+<script src="/static/js/chat.js"></script>
+</body>
+</html>
