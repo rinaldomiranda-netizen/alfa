@@ -168,6 +168,8 @@ class PedidosMixin:
     # ================================================================ PAGAMENTO ONLINE
     def pagar(self, ator: Ator, pedido_id: str, meio: str = "", base_url: str | None = None) -> dict:
         """Cria somente uma cobrança pelo checkout real do gateway configurado."""
+        if meio in ("cartao_simulado", "pix_simulado"):
+            return self.pagar_simulado(ator, pedido_id, meio)
         if meio != "checkout":
             raise ErroNegocio("Meio de pagamento inválido. Escolha o checkout online.")
         p = self.banco.um("SELECT empresa_id FROM pedidos WHERE id=?", (pedido_id,))
@@ -175,6 +177,31 @@ class PedidosMixin:
             raise ErroNegocio("O pagamento online está desativado para esta empresa.")
         pag = self.iniciar_pagamento_real(ator, pedido_id, meio, base_url)
         return {**self.obter_pedido(ator, pedido_id), "pagamento_iniciado": pag}
+
+    def pagar_simulado(self, ator: Ator, pedido_id: str, meio: str) -> dict:
+        """SIMULAÇÃO para os sócios em teste: faz de conta que o cartão/Pix foi pago. Não cobra nada, não usa dados de
+        cartão e só vale para pedido da loja de demonstração feito por uma conta de teste ligada."""
+        if not self.eh_testador_ativo(ator):
+            raise ErroNegocio("A simulação de pagamento só vale para os sócios liberados para teste.")
+        with self.banco.transacao() as c:
+            p = self._uma(c, "SELECT * FROM pedidos WHERE id=?", (pedido_id,))
+            if not p or p["cliente_id"] != ator.usuario_id:
+                raise NaoEncontrado("Pedido não encontrado.")
+            emp = self._uma(c, "SELECT demonstracao FROM empresas WHERE id=?", (p["empresa_id"],))
+            if not emp or not emp["demonstracao"]:
+                raise ErroNegocio("A simulação só vale para a Loja Teste RMD, nunca para loja de verdade.")
+            if p["status"] != "aguardando_pagamento":
+                raise ErroNegocio("Este pedido não está aguardando pagamento.")
+            if p["reserva_expira_em"] and p["reserva_expira_em"] <= self.agora():
+                raise ErroNegocio("O tempo da reserva acabou. Faça o pedido de novo.")
+            agora = self.agora()
+            ref = ("SIMULADO-CARTAO-" if meio == "cartao_simulado" else "SIMULADO-PIX-") + novo_id()[:8]
+            c.execute("""UPDATE pagamentos SET status='cancelado', atualizado_em=? WHERE pedido_id=? AND status IN ('pendente','em_analise')""", (agora, pedido_id))
+            c.execute("""INSERT INTO pagamentos(id, pedido_id, empresa_id, meio, valor_centavos, status, referencia_externa, criado_em, atualizado_em)
+                         VALUES (?,?,?,?,?,'aprovado',?,?,?)""", (novo_id(), pedido_id, p["empresa_id"], "teste", p["total_centavos"], ref, agora, agora))
+            self._efetivar_pagamento(c, p, ator, "pagamento SIMULADO (" + ("cartão" if meio == "cartao_simulado" else "Pix") + ") — teste, nada foi cobrado")
+        self.auditar(ator, "pagamento.simulado", pedido_id, {"meio": meio}, empresa_id=p["empresa_id"])
+        return self.obter_pedido(ator, pedido_id)
 
     def _efetivar_pagamento(self, c, p: dict, ator, nota: str) -> None:
         """Pagamento aprovado: reserva vira venda no estoque, pedido vai para 'pago' e a loja é avisada."""

@@ -1,5 +1,5 @@
 /* Sobrou+ — service worker: app instalável, atualização automática e aviso no celular. */
-const CACHE = "sobrou-v6-click-link-20261008";
+const CACHE = "sobrou-v7-pagto-simulado-20261009";
 const BASE = self.registration.scope;               // ex.: https://…/sobrou/
 const ESSENCIAIS = ["", "painel", "entregador", "static/css/sobrou.css", "static/css/app.css", "static/css/painel.css",
   "static/js/comum.js", "static/js/app.js", "static/js/painel.js", "static/js/painel2.js", "static/js/entregador.js", "static/js/qrcode.js",

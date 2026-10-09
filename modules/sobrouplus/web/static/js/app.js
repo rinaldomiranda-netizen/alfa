@@ -291,7 +291,7 @@ async function telaPedidos(alvo) {
 
 let vigiaPagamento = null;
 async function caixaPagamento(p) {
-  const meios = await S.api("/api/meios-pagamento").catch(() => ({ teste: false, pix: false, cartao: false, boleto: false }));
+  const meios = await S.api("/api/meios-pagamento").catch(() => ({ teste: false, pix: false, cartao: false, boleto: false, simulado: false }));
   const fim = new Date(p.reserva_expira_em);
   const caixa = h("div", { class: "cartao", style: { margin: "1rem 0" } });
   const area = h("div");
@@ -321,7 +321,20 @@ async function caixaPagamento(p) {
   };
   const botoes = [];
   if (meios.gateway_configurado) botoes.push(h("button", { class: "btn btn-cta btn-bloco", onclick: () => iniciar("checkout") }, `Pagar ${S.dinheiro(p.total_centavos)} · Pix, cartão ou boleto`));
-  if (!meios.gateway_configurado) botoes.push(h("div", { class: "aviso-teste" }, "Pagamento online ainda não configurado. Este pedido não será marcado como pago até a confirmação do gateway."));
+  if (meios.simulado) {
+    // SIMULAÇÃO só para sócios em teste: não pede dado de cartão e não cobra nada.
+    const simular = async (meio, rotulo) => {
+      S.limpar(area, h("div", { class: "aviso-teste" }, meio === "cartao_simulado" ? "Passando o cartão… (simulação)" : "Confirmando o Pix… (simulação)"));
+      await new Promise((r) => setTimeout(r, 1800));
+      await S.acao(() => S.api(`/api/pedidos/${p.id}/pagar`, { corpo: { meio } }));
+      S.toast(rotulo + " simulado aprovado. Nada foi cobrado.");
+      rotear();
+    };
+    botoes.push(h("div", { class: "aviso-teste" }, "MODO TESTE: o pagamento abaixo é de mentira. Nenhum cartão é lido e nenhum dinheiro é cobrado."));
+    botoes.push(h("button", { class: "btn btn-cta btn-bloco", style: { "margin-top": ".5rem" }, onclick: () => simular("cartao_simulado", "Cartão") }, `💳 Pagar ${S.dinheiro(p.total_centavos)} no cartão (simulado)`));
+    botoes.push(h("button", { class: "btn btn-verde btn-bloco", style: { "margin-top": ".5rem" }, onclick: () => simular("pix_simulado", "Pix") }, `Pagar ${S.dinheiro(p.total_centavos)} com Pix (simulado)`));
+  }
+  if (!meios.gateway_configurado && !meios.simulado) botoes.push(h("div", { class: "aviso-teste" }, "Pagamento online ainda não configurado. Este pedido não será marcado como pago até a confirmação do gateway."));
   S.limpar(caixa, h("h2", {}, "Pagamento"), h("p", {}, `Reservamos para você até ${S.hora(p.reserva_expira_em)} (${Math.max(0, Math.round((fim - Date.now()) / 60000))} min).`), botoes, area);
   if (pendente && pendente.meio === "pix" && pendente.qr_code) mostrarPix(pendente);
   return caixa;

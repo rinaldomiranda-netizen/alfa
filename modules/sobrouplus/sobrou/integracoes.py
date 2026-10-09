@@ -194,10 +194,19 @@ class IntegracoesMixin:
     def pagamento_teste_permitido(self) -> bool:
         return False
 
-    def meios_pagamento(self) -> dict:
+    def eh_testador_ativo(self, ator) -> bool:
+        """Sócio liberado pelo Desenvolvedor RMD em 'Testes com sócios' (e ainda ligado)."""
+        if ator is None:
+            return False
+        return bool(self.banco.um("""SELECT 1 FROM testador_contas tc JOIN testadores t ON t.id=tc.testador_id
+                                     WHERE tc.usuario_id=? AND t.ativo=1""", (ator.usuario_id,)))
+
+    def meios_pagamento(self, ator=None) -> dict:
         real = self._mp() is not None
         return {"teste": False, "pix": real, "cartao": real, "boleto": real,
-                "parcelas_maximas": self._parcelas_maximas() if real else 0, "gateway_configurado": real}
+                "parcelas_maximas": self._parcelas_maximas() if real else 0, "gateway_configurado": real,
+                # Simulação de cartão/Pix: só para sócios liberados. Nunca cobra nada nem usa dados de cartão.
+                "simulado": self.eh_testador_ativo(ator)}
 
     def _cab_mp(self, c: dict, idem: str | None = None) -> dict:
         cab = {"Authorization": "Bearer " + c["access_token"]}

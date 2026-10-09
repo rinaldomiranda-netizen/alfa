@@ -553,9 +553,9 @@ def r_verificar_pag(h, p, a, q, c, pid):
     return p.verificar_pagamento(a, pid)
 
 
-@rota("GET", "/api/meios-pagamento", True)
+@rota("GET", "/api/meios-pagamento")
 def r_meios(h, p, a, q, c):
-    return p.meios_pagamento()
+    return p.meios_pagamento(a)
 
 
 @rota("GET", "/api/pagamentos")
