@@ -13,6 +13,7 @@
   depois("empresas", ["planos", "Planos e mensalidades", () => pode("empresas", "aprovar")]);
   TELAS.push(["Desenvolvedor e conta"]);
   TELAS.push(["teste", "Modo teste (todas as telas)", () => P.eu.eh_dono || P.eu.usuario.papel === "admin_sobrou"]);
+  TELAS.push(["socios", "Testes com sócios", () => P.eu.eh_dono || P.eu.usuario.papel === "admin_sobrou"]);
   TELAS.push(["config", "Configurações", () => true]);
   const i = TELAS.findIndex((t) => t[0] === "integracoes"); const it = TELAS.splice(i, 1)[0]; TELAS.push(it);
   const j = TELAS.findIndex((t) => t[0] === "sistema"); const st = TELAS.splice(j, 1)[0]; TELAS.push(st);
@@ -321,16 +322,27 @@ async function telaRelatorios(alvo) {
 
 // ------------------------------------------------------------------ avaliações
 async function telaAvaliacoes(alvo) {
-  const r = await S.api("/api/avaliacoes" + comEmpresa());
+  const [r, rc] = await Promise.all([
+    S.api("/api/avaliacoes" + comEmpresa()),
+    S.api("/api/avaliacoes-clientes" + comEmpresa()),
+  ]);
   const est = (n) => h("span", { class: "estrelas" }, "★".repeat(n) + "☆".repeat(5 - n));
-  S.limpar(alvo, h("h1", {}, "Avaliações dos clientes"),
-    h("div", { class: "kpis" }, kpi("Nota média", r.media ? `${r.media.toLocaleString("pt-BR")} ★` : "—", "laranja"), kpi("Avaliações", String(r.total))),
+  S.limpar(alvo, h("h1", {}, "Avaliações"),
+    h("h2", {}, "Clientes avaliam as empresas"),
+    h("div", { class: "kpis" }, kpi("Nota média da empresa", r.media ? `${r.media.toLocaleString("pt-BR")} ★` : "—", "laranja"), kpi("Avaliações", String(r.total))),
     r.itens.length ? h("div", { class: "grade" }, r.itens.map((a) => h("div", { class: "cartao" },
       h("div", { class: "linha" }, est(a.nota), h("span", { class: "mudo", style: { "text-align": "right" } }, `#${a.numero} · ${S.data(a.criada_em)}`)),
       P.eu.plataforma ? h("div", { class: "mudo" }, a.loja) : null, h("p", {}, a.comentario || h("span", { class: "mudo" }, "(sem comentário)")), h("div", { class: "mudo" }, a.cliente),
       a.resposta ? h("p", {}, h("b", {}, "Resposta da loja: "), a.resposta) : (pode("pedidos", "operar") ? h("button", { class: "btn btn-p btn-linha", onclick: async () => {
         const t = prompt("Resposta para o cliente:"); if (!t) return; await S.acao(() => S.api(`/api/avaliacoes/${a.id}/responder`, { corpo: { resposta: t } }), "Resposta enviada."); desenhar(); } }, "Responder") : null))))
-      : h("p", { class: "mudo" }, "Nenhuma avaliação ainda. O cliente avalia depois que o pedido é concluído."));
+      : h("p", { class: "mudo" }, "Nenhuma avaliação de empresa ainda."),
+    h("h2", { style: { "margin-top": "1.5rem" } }, "Empresas avaliam clientes"),
+    h("div", { class: "kpis" }, kpi("Nota média dos clientes", rc.media ? `${rc.media.toLocaleString("pt-BR")} ★` : "—", "laranja"), kpi("Avaliações", String(rc.total))),
+    rc.itens.length ? h("div", { class: "grade" }, rc.itens.map((a) => h("div", { class: "cartao" },
+      h("div", { class: "linha" }, est(a.nota), h("span", { class: "mudo" }, `#${a.numero} · ${S.data(a.criada_em)}`)),
+      P.eu.plataforma ? h("div", { class: "mudo" }, a.loja) : null,
+      h("b", {}, a.cliente), a.comentario ? h("p", {}, a.comentario) : h("p", { class: "mudo" }, "Sem comentário"))))
+      : h("p", { class: "mudo" }, "As empresas podem avaliar o cliente depois que o pedido for concluído."));
 }
 
 // ------------------------------------------------------------------ planos
@@ -370,8 +382,118 @@ telaSistema = async function (alvo) {
       : h("p", { class: "mudo" }, "Nenhuma cópia ainda.")));
 };
 
-Object.assign(FUNCOES, { teste: telaTeste, config: telaConfig, financeiro: telaFinanceiro, relatorios: telaRelatorios, avaliacoes: telaAvaliacoes,
-  planos: telaPlanos, sistema: telaSistema, usuarios: telaUsuarios, impacto: telaImpacto, inicio: telaInicio });
+// ------------------------------------------------------------------ testes com os sócios (Desenvolvedor RMD)
+// Cada pessoa ganha um aplicativo separado por perfil (Central, Loja, Caixa, Entregador, Cliente), cada um com
+// nome, ícone e endereço próprios: instalar um nunca troca o nome do outro no celular.
+function mensagemTestes(nome, base, links) {
+  const linhas = [`Olá, ${nome.split(" ")[0]}! Estes são os aplicativos de TESTE do Sobrou+ (dados fictícios, pode testar à vontade).`,
+    "Abra cada link no celular, crie a sua senha e toque em INSTALAR. Cada um vira um ícone separado na tela:", ""];
+  links.forEach((l, i) => linhas.push(`${i + 1}) ${l.nome_app}`, `   Login: ${l.email}`, `   ${base}${l.caminho}`, ""));
+  linhas.push("No iPhone: abra no Safari, crie a senha, toque em Compartilhar e depois em \"Adicionar à Tela de Início\". Ao abrir o ícone, entre com o login acima e a senha que você criou.",
+    "Cada link vale 7 dias e só funciona uma vez. Qualquer problema, me avise mandando um print.");
+  return linhas.join("\n");
+}
 
+function folhaLinksTestes(t, base, links) {
+  const msg = mensagemTestes(t.nome, base, links);
+  const tel = (t.telefone || "").replace(/\D/g, "");
+  const wa = "https://wa.me/" + tel + "?text=" + encodeURIComponent(msg);
+  const copiar = async (texto, aviso) => { try { await navigator.clipboard.writeText(texto); S.toast(aviso); } catch (e) { S.toast("Não deu para copiar. Selecione o texto e copie.", true); } };
+  S.folha(h("div", {}, h("h2", {}, `Links de teste de ${t.nome}`),
+    h("p", { class: "mudo" }, "Mande tudo de uma vez pelo WhatsApp ou copie cada link. Os links valem 7 dias e funcionam uma vez só."),
+    h("div", { class: "linha", style: { margin: ".6rem 0 1rem", "flex-wrap": "wrap", gap: ".5rem" } },
+      h("a", { class: "btn btn-cta", href: wa, target: "_blank", rel: "noopener" }, tel ? "Mandar tudo no WhatsApp dele(a)" : "Mandar tudo no WhatsApp"),
+      h("button", { class: "btn btn-linha", onclick: () => copiar(msg, "Mensagem copiada. É só colar no WhatsApp.") }, "Copiar mensagem completa")),
+    links.map((l) => h("div", { class: "cartao", style: { display: "flex", gap: ".8rem", "align-items": "center", "flex-wrap": "wrap", margin: ".5rem 0" } },
+      h("img", { src: S.u(`/static/img/apps/${l.app}-192.png`), alt: "", style: { width: "48px", height: "48px", "border-radius": "12px" } }),
+      h("div", { style: { flex: "1", "min-width": "200px" } }, h("b", {}, l.nome_app), h("div", { class: "mudo" }, "Login: " + l.email)),
+      h("button", { class: "btn btn-p btn-linha", onclick: () => copiar(base + l.caminho, "Link copiado.") }, "Copiar link")))));
+}
+
+async function telaSocios(alvo) {
+  const r = await S.api("/api/rmd/testadores");
+  const nome = h("input", { type: "text", required: true, placeholder: "Ex.: João Silva" });
+  const tel = h("input", { type: "tel", placeholder: "Celular com DDD (opcional, para mandar no WhatsApp)" });
+  const criar = async (e) => {
+    e.preventDefault();
+    const x = await S.acao(() => S.api("/api/rmd/testadores", { corpo: { nome: nome.value.trim(), telefone: tel.value.trim() } }), "Pronto! Acessos de teste criados.");
+    folhaLinksTestes(x.testador, x.url_acesso, x.links); desenhar();
+  };
+  const estado = (c) => !c.ativo ? "desligado" : c.senha_criada ? (c.ultimo_acesso ? "em uso · último acesso " + S.data(c.ultimo_acesso) : "senha criada") : "aguardando abrir o link";
+  S.limpar(alvo, h("h1", {}, "Testes com sócios"),
+    h("p", {}, "Cadastre cada sócio (ou pessoa de confiança) que vai testar. O sistema cria para ela uma conta em cada aplicativo, na ",
+      h("b", {}, "Loja Teste RMD"), " (dados fictícios, separados dos clientes reais), e gera os links para instalar no celular."),
+    h("div", { class: "grade" }, r.apps.map((a) => h("div", { class: "cartao", style: { display: "flex", gap: ".7rem", "align-items": "center" } },
+      h("img", { src: S.u(`/static/img/apps/${a.app}-192.png`), alt: "", style: { width: "52px", height: "52px", "border-radius": "12px" } }),
+      h("div", {}, h("b", {}, a.nome), h("div", { class: "mudo" }, a.descricao))))),
+    h("div", { class: "cartao", style: { "margin-top": "1rem" } }, h("h2", {}, "Nova pessoa para testar"),
+      h("form", { onsubmit: criar }, h("label", {}, "Nome"), nome, h("label", {}, "Celular (WhatsApp)"), tel,
+        h("button", { class: "btn btn-cta", style: { "margin-top": ".8rem" } }, "Criar os 5 aplicativos e gerar os links"))),
+    h("h2", { style: { "margin-top": "1.4rem" } }, "Quem está testando"),
+    r.itens.length ? r.itens.map((t) => h("div", { class: "cartao", style: { margin: ".6rem 0", opacity: t.ativo ? "1" : ".6" } },
+      h("div", { class: "linha", style: { "justify-content": "space-between", "flex-wrap": "wrap", gap: ".5rem" } },
+        h("h3", { style: { margin: "0" } }, t.nome, t.ativo ? "" : " (acessos desligados)"),
+        h("div", { class: "linha", style: { gap: ".4rem", "flex-wrap": "wrap" } },
+          t.ativo ? h("button", { class: "btn btn-p btn-cta", onclick: async () => {
+            const x = await S.acao(() => S.api(`/api/rmd/testadores/${t.id}/links`, { corpo: {} }), "Links novos gerados (os antigos pararam de valer).");
+            folhaLinksTestes(x.testador, x.url_acesso, x.links); desenhar(); } }, "Gerar links novos") : null,
+          h("button", { class: "btn btn-p btn-linha", onclick: async () => {
+            await S.acao(() => S.api(`/api/rmd/testadores/${t.id}/ligar`, { corpo: { ligado: !t.ativo } }), t.ativo ? "Acessos desligados." : "Acessos ligados de novo.");
+            desenhar(); } }, t.ativo ? "Desligar acessos" : "Ligar acessos"))),
+      t.contas.map((c) => h("div", { style: { display: "flex", gap: ".6rem", "align-items": "center", padding: ".45rem 0", "border-top": "1px solid rgba(0,0,0,.08)" } },
+        h("img", { src: S.u(`/static/img/apps/${c.app}-192.png`), alt: "", style: { width: "36px", height: "36px", "border-radius": "9px", flex: "0 0 auto" } }),
+        h("div", { style: { "min-width": "0", "overflow-wrap": "anywhere" } }, h("b", {}, c.nome_app), h("div", { class: "mudo" }, c.email), h("div", { class: "mudo" }, estado(c)))))))
+      : h("p", { class: "mudo" }, "Ninguém cadastrado ainda."));
+}
+
+Object.assign(FUNCOES, { teste: telaTeste, config: telaConfig, financeiro: telaFinanceiro, relatorios: telaRelatorios, avaliacoes: telaAvaliacoes,
+  planos: telaPlanos, sistema: telaSistema, usuarios: telaUsuarios, impacto: telaImpacto, inicio: telaInicio, socios: telaSocios });
+
+S.iniciarApp();
+iniciar();
+
+async function telaPagamentos(alvo) {
+  const r = await S.api("/api/pagamentos" + comEmpresa());
+  const itens = r.itens || [];
+  const meio = { pix: "Pix", cartao: "Cartão", boleto: "Boleto", teste: "Teste (legado)" };
+  const status = { pendente: "Pendente", em_analise: "Em análise", aprovado: "Aprovado", recusado: "Recusado",
+    cancelado: "Cancelado", estornado: "Estornado", estorno_pendente: "Estorno solicitado", divergente: "Divergente" };
+  const linha = (g) => {
+    let resposta = g.resposta_gateway || "—";
+    try { resposta = JSON.stringify(JSON.parse(resposta), null, 2); } catch (e) { /* valor já resumido */ }
+    const botoes = [];
+    if (P.eu.plataforma && g.status === "aprovado") botoes.push(h("button", { class: "btn btn-p btn-escuro", onclick: async () => {
+      if (!confirm("Solicitar estorno ao gateway para este pagamento?")) return;
+      await S.acao(() => S.api(`/api/pagamentos/${g.id}/estornar`, { corpo: {} }), "Solicitação de estorno enviada ao gateway.");
+      desenhar();
+    } }, "Solicitar estorno"));
+    if (P.eu.plataforma && ["pendente", "em_analise"].includes(g.status) && g.externo_id) botoes.push(h("button", { class: "btn btn-p btn-linha", onclick: async () => {
+      if (!confirm("Cancelar esta cobrança no gateway?")) return;
+      await S.acao(() => S.api(`/api/pagamentos/${g.id}/cancelar`, { corpo: {} }), "Cancelamento consultado no gateway.");
+      desenhar();
+    } }, "Cancelar cobrança"));
+    return h("tr", {},
+      h("td", {}, `#${g.pedido_numero} · ${g.cliente}`, h("div", { class: "mudo" }, g.empresa)),
+      h("td", {}, S.dinheiro(g.valor_centavos), ` ${g.moeda || "BRL"}`),
+      h("td", {}, meio[g.meio] || g.meio),
+      h("td", {}, status[g.status] || g.status, g.detalhe_status ? h("div", { class: "mudo" }, g.detalhe_status) : null),
+      h("td", {}, g.externo_id || g.preference_id || "—"),
+      h("td", {}, S.data(g.criado_em), g.aprovado_em ? h("div", { class: "mudo" }, "Aprovado: " + S.data(g.aprovado_em)) : null),
+      h("td", {}, h("details", {}, h("summary", {}, "Ver retorno do gateway"), h("pre", { style: { "white-space": "pre-wrap", "max-width": "360px", "overflow-wrap": "anywhere" } }, resposta)),
+        botoes.length ? h("div", { class: "linha", style: { "margin-top": ".4rem" } }, botoes) : null));
+  };
+  S.limpar(alvo, h("h1", {}, "Pagamentos"),
+    h("p", { class: "mudo" }, "Transações reais registradas pelo servidor. A tela não guarda dados de cartão; aprovação e estorno dependem da confirmação do gateway."),
+    itens.length ? h("div", { class: "cartao", style: { "overflow-x": "auto" } },
+      h("table", {}, h("thead", {}, h("tr", {}, ["Pedido / cliente", "Valor", "Meio", "Status", "ID do gateway", "Data", "Ações / resposta"].map((t) => h("th", {}, t)))),
+        h("tbody", {}, itens.map(linha))))
+      : h("div", { class: "vazio" }, "Nenhum pagamento registrado."));
+}
+TELAS.push(["pagamentos", "Pagamentos", () => pode("financeiro", "ver")]);
+FUNCOES.pagamentos = telaPagamentos;
+
+// O painel é carregado por dois arquivos JS (painel.js + painel2.js).
+// A inicialização precisa acontecer somente depois que os dois terminaram,
+// senão a tela fica vazia ou perde funções adicionadas pelo painel2.
 S.iniciarApp();
 iniciar();

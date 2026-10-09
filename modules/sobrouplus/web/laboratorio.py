@@ -94,7 +94,11 @@ def servir() -> None:
     class Links(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
             perfil = self.path.partition("perfil=")[2].split("&")[0]
-            if self.headers.get("X-Segredo") != segredo or perfil not in PERFIS:
+            try:
+                segredo_atual = SEGREDO.read_text(encoding="utf-8").strip()
+            except OSError:
+                segredo_atual = ""
+            if not segredo_atual or self.headers.get("X-Segredo") != segredo_atual or perfil not in PERFIS:
                 self.send_error(403)
                 return
             uid = demo.garantir_demonstracao(p).get(perfil)

@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sobrou.nucleo import ErroNegocio, NaoEncontrado, SemPermissao  # noqa: E402
+from sobrou.nucleo import ErroNegocio, NaoEncontrado, SemPermissao, novo_id  # noqa: E402
 from sobrou.plataforma import Plataforma  # noqa: E402
 
 JPEG = base64.b64encode(b"\xff\xd8\xff\xe0" + b"0" * 200).decode()
@@ -40,9 +40,29 @@ def local(rel: Relogio, **kw) -> str:
 class Base(unittest.TestCase):
     def setUp(self):
         self.pasta = tempfile.mkdtemp()
+        from sobrou import seguranca as _seg
+        for _b in (_seg.FALHAS_LOGIN, _seg.FALHAS_CODIGO, _seg.FALHAS_RETIRADA):
+            _b._dados.clear()  # bloqueios ficam na memória: cada teste começa limpo
         self.rel = Relogio()
         self.p = Plataforma(self.pasta, self.rel)
         self.p.rede = _sem_internet
+        pagar_real = self.p.pagar
+        def pagar_temporario(ator, pedido_id, meio="teste", base_url=None):
+            if meio != "teste":
+                return pagar_real(ator, pedido_id, meio, base_url)
+            with self.p.banco.transacao() as c:
+                pedido = self.p._uma(c, "SELECT * FROM pedidos WHERE id=?", (pedido_id,))
+                if not pedido or pedido["cliente_id"] != ator.usuario_id:
+                    raise NaoEncontrado("Pedido não encontrado.")
+                if pedido["status"] != "aguardando_pagamento":
+                    raise ErroNegocio("Este pedido não está aguardando pagamento.")
+                agora = self.p.agora()
+                c.execute("""INSERT INTO pagamentos(id, pedido_id, empresa_id, meio, valor_centavos, status, referencia_externa, criado_em, atualizado_em)
+                             VALUES (?,?,?,?,?,'aprovado',?,?,?)""",
+                          (novo_id(), pedido_id, pedido["empresa_id"], "teste", pedido["total_centavos"], "TEST_FIXTURE", agora, agora))
+                self.p._efetivar_pagamento(c, pedido, ator, "fixture temporária de teste automatizado")
+            return self.p.obter_pedido(ator, pedido_id)
+        self.p.pagar = pagar_temporario
         self.p.garantir_admin_sobrou("admin@sobrou.test")
         self.adm = self.p.ator_da_sessao(self.p.entrar("admin@sobrou.test", "1234")["token"])
         self.emp_a = self.p.criar_empresa(self.adm, {"nome": "Restaurante A", "tipo": "restaurante"})
@@ -154,10 +174,10 @@ class TestDispatch(Base):
         self.p.criar_usuario(self.adm, {"nome": "Fê", "email": "fe@e.test", "papel": "entregador"})
         edu = self.p.ator_da_sessao(self.p.entrar("edu@e.test", "1234")["token"])
         fe = self.p.ator_da_sessao(self.p.entrar("fe@e.test", "1234")["token"])
-        self.p.enviar_posicao(edu, -10.912, -37.072)  # pertinho da loja
-        self.p.enviar_posicao(fe, -10.99, -37.10)     # longe
         self.p.ficar_online(edu, True)
         self.p.ficar_online(fe, True)
+        self.p.enviar_posicao(edu, -10.912, -37.072)  # pertinho da loja
+        self.p.enviar_posicao(fe, -10.99, -37.10)     # longe
         o = self.oferta()
         ped = self.p.criar_pedido(self.cli, {"itens": [{"oferta_id": o["id"], "quantidade": 1}], "modo": "entrega",
                                             "endereco": "Rua X, 10", "lat": -10.92, "lng": -37.06})

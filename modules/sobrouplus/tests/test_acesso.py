@@ -18,32 +18,43 @@ from sobrou.nucleo import ErroNegocio, NaoAutenticado, NaoEncontrado, SemPermiss
 class TestCriador(Base):
     def setUp(self):
         super().setUp()
-        self.p.definir_dono("dono@sobrou.test")
+        dono = self.p.definir_dono("dono@sobrou.test")
+        self.senha_inicial = dono["senha_inicial_unica"] or "1234"  # regra do projeto: senha inicial 1234
 
-    def test_entra_so_com_a_senha_sem_troca_obrigatoria(self):
+    def _dono_com_2fa(self):
+        dono = self.p.ator_da_sessao(self.p.entrar_criador(self.senha_inicial)["token"])
+        seg = self.p.iniciar_2fa(dono)["segredo"]
+        agora = int(time.time() // seguranca.TOTP_PASSO)
+        self.p.confirmar_2fa(dono, seguranca.codigo_totp(seg, agora))
+        sessao = self.p.entrar_criador(self.senha_inicial, codigo=seguranca.codigo_totp(seg, agora + 1))
+        return self.p.ator_da_sessao(sessao["token"])
+
+    def test_senha_inicial_padrao_1234(self):
+        self.assertEqual(self.senha_inicial, "1234")
         s = self.p.entrar_criador("1234")
-        self.assertFalse(s["usuario"]["trocar_senha"])
         dono = self.p.ator_da_sessao(s["token"])
         self.assertEqual(dono.papel, "admin_sobrou")
-        self.assertTrue(self.p.senha_padrao(dono))  # aviso na tela para trocar (sem obrigar)
+        self.assertTrue(self.p.senha_padrao(dono))
+        self.p.trocar_senha(dono, "1234", "novaSenha9")
+        self.assertTrue(self.p.entrar_criador("novaSenha9")["token"])
+        with self.assertRaises(NaoAutenticado):
+            self.p.entrar_criador("1234")
         with self.assertRaises(NaoAutenticado):
             self.p.entrar_criador("errada")
 
-    def test_dois_fatores(self):
-        dono = self.p.ator_da_sessao(self.p.entrar_criador("1234")["token"])
+    def test_dois_fatores_temporariamente_nao_bloqueiam_login(self):
+        # O TOTP continua configurável/validável, mas o login está temporariamente
+        # liberado apenas com e-mail + senha, conforme decisão do projeto.
+        dono = self.p.ator_da_sessao(self.p.entrar_criador(self.senha_inicial)["token"])
         seg = self.p.iniciar_2fa(dono)["segredo"]
         agora = int(time.time() // seguranca.TOTP_PASSO)
-        with self.assertRaises(ErroNegocio):
-            self.p.confirmar_2fa(dono, "000000" if seguranca.codigo_totp(seg, agora) != "000000" else "111111")
-        self.p.confirmar_2fa(dono, seguranca.codigo_totp(seg, agora))
-        with self.assertRaises(PrecisaCodigo):
-            self.p.entrar_criador("1234")
-        with self.assertRaises(PrecisaCodigo):  # mesmo código não serve de novo
-            self.p.entrar_criador("1234", codigo=seguranca.codigo_totp(seg, agora))
-        self.assertTrue(self.p.entrar_criador("1234", codigo=seguranca.codigo_totp(seg, agora + 1))["token"])
+        codigo = seguranca.codigo_totp(seg, agora)
+        self.p.confirmar_2fa(dono, codigo)
+        self.assertTrue(self.p.entrar_criador(self.senha_inicial)["token"])
+        self.assertTrue(self.p.entrar_criador(self.senha_inicial, codigo=codigo)["token"])
 
     def test_modo_teste_so_para_o_criador(self):
-        dono = self.p.ator_da_sessao(self.p.entrar_criador("1234")["token"])
+        dono = self._dono_com_2fa()
         for perfil in ("cliente", "entregador", "operador_empresa", "admin_empresa", "financeiro"):
             tok = self.p.abrir_teste(dono, perfil)
             conta = self.p.ator_da_sessao(self.p.entrar_com_token_unico(tok)["token"])

@@ -301,7 +301,11 @@ class OfertasMixin:
         """Marketplace público: só ofertas ativas, de empresas aprovadas e ativas, dentro do horário de venda."""
         f = filtros or {}
         agora = self.agora()
-        cond = ["o.status='ativa'", "o.inicio<=?", "o.fim>?", "e.aprovada=1", "e.ativa=1", "u.ativa=1"]
+        cond = ["o.status='ativa'", "o.inicio<=?", "o.fim>?", "e.aprovada=1", "e.ativa=1", "u.ativa=1",
+                "COALESCE((SELECT re.habilitado FROM recursos_empresa re WHERE re.empresa_id=e.id AND re.recurso='ofertas'),1)=1",
+                "COALESCE((SELECT re.habilitado FROM recursos_empresa re WHERE re.empresa_id=e.id AND re.recurso='pedidos'),1)=1",
+                "COALESCE((SELECT cfg.valor FROM config cfg WHERE cfg.chave='recurso_global:ofertas'),'1')='1'",
+                "COALESCE((SELECT cfg.valor FROM config cfg WHERE cfg.chave='recurso_global:pedidos'),'1')='1'"]
         p: list = [agora, agora]
         if f.get("categoria") and f["categoria"] != "todos":
             cond.append("o.categoria=?")
@@ -334,8 +338,24 @@ class OfertasMixin:
                                       WHERE {' AND '.join(cond)}""", tuple(p))
         lat, lng = real(f.get("lat"), "a latitude", -90, 90), real(f.get("lng"), "a longitude", -180, 180)
         notas = self.notas_empresas()
+        recursos_globais_off = {r["chave"].split(":", 1)[1] for r in self.banco.todos(
+            "SELECT chave FROM config WHERE chave LIKE 'recurso_global:%' AND valor='0'")}
+        recursos_empresa_off = {(r["empresa_id"], r["recurso"]) for r in self.banco.todos(
+            "SELECT empresa_id, recurso FROM recursos_empresa WHERE habilitado=0")}
+        def recurso_on(eid, chave):
+            return chave not in recursos_globais_off and (eid, chave) not in recursos_empresa_off
         itens = []
         for o in linhas:
+            empresa_id = o["empresa_id"]
+            if not all(recurso_on(empresa_id, chave) for chave in ("ofertas", "pedidos", "pagamentos")):
+                continue
+            if f.get("modo") in ("retirada", "entrega") and not recurso_on(empresa_id, f["modo"]):
+                continue
+            if not any(recurso_on(empresa_id, modo) and (
+                (modo == "retirada" and o.get("permite_retirada")) or
+                (modo == "entrega" and o.get("permite_entrega") and o.get("aceita_entrega")))
+                for modo in ("retirada", "entrega")):
+                continue
             r = self._enriquecer(o, lat, lng)
             if r["disponivel"] <= 0:
                 continue

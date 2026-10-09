@@ -12,6 +12,20 @@ TIPOS_EMPRESA = ("restaurante", "lanchonete", "padaria", "mercado", "supermercad
                  "confeitaria", "outra")
 TEMAS = ("claro", "medio", "escuro")
 TAXA_PADRAO = 12.0  # % da taxa Sobrou+ sobre o valor dos produtos (configurável por empresa)
+RECURSOS = {
+    "ofertas": "Ofertas",
+    "estoque": "Estoque",
+    "pedidos": "Pedidos",
+    "retirada": "Retirada no balcão",
+    "entrega": "Entrega e entregadores",
+    "avaliacoes": "Avaliações",
+    "unidades": "Unidades",
+    "financeiro": "Financeiro e repasses",
+    "relatorios": "Relatórios",
+    "doacoes": "Doações e instituições",
+    "pagamentos": "Pagamentos online",
+    "usuarios": "Equipe e acessos",
+}
 
 
 def _email(valor) -> str:
@@ -77,33 +91,33 @@ class ContasMixin:
         e = (email or "").strip().lower()
         u = self.banco.um("SELECT * FROM usuarios WHERE email=?", (e,))
         agora = self.agora()
-        if u and u["bloqueado_ate"] and u["bloqueado_ate"] > agora:
+        # O bloqueio vale para este e-mail VINDO DESTE IP (e igual para e-mail que não existe):
+        # quem ataca bloqueia só a si mesmo e não descobre quais e-mails estão cadastrados.
+        chave_falhas = f"{e}|{ip or ''}"
+        if seguranca.FALHAS_LOGIN.bloqueado(chave_falhas):
             raise ErroNegocio("Muitas tentativas. Aguarde alguns minutos e tente de novo.")
-        if not u or not u["ativo"] or not seguranca.conferir_senha(senha or "", u["senha_salt"], u["senha_hash"]):
+        iteracoes_senha = int(u.get("senha_iteracoes") or 200_000) if u else 200_000
+        if not u:
+            seguranca.gastar_tempo_de_senha(senha)
+        if not u or not u["ativo"] or not seguranca.conferir_senha(senha or "", u["senha_salt"], u["senha_hash"], iteracoes_senha):
+            seguranca.FALHAS_LOGIN.falhou(chave_falhas)
             if u:
-                falhas = u["tentativas_falhas"] + 1
-                espera = seguranca.duracao_bloqueio(falhas)
-                ate = iso(self.agora_dt() + timedelta(seconds=espera)) if espera else None
-                self.banco.executar("UPDATE usuarios SET tentativas_falhas=?, bloqueado_ate=? WHERE id=?", (falhas, ate, u["id"]))
+                self.banco.executar("UPDATE usuarios SET tentativas_falhas=tentativas_falhas+1 WHERE id=?", (u["id"],))
             raise NaoAutenticado("E-mail ou senha incorretos.")
+        seguranca.FALHAS_LOGIN.sucesso(chave_falhas)
         if u["empresa_id"]:
             emp = self.banco.um("SELECT ativa FROM empresas WHERE id=?", (u["empresa_id"],))
             if emp and not emp["ativa"]:
                 raise SemPermissao("O acesso desta empresa está bloqueado. Fale com a equipe Sobrou+.")
         if u.get("excluido_em"):
             raise NaoAutenticado("E-mail ou senha incorretos.")
-        if u.get("totp_segredo"):
-            from .acesso import PrecisaCodigo
-            if not codigo:
-                raise PrecisaCodigo("Digite o código de 6 números do aplicativo autenticador.")
-            cont = seguranca.conferir_totp(u["totp_segredo"], codigo, u.get("totp_ultimo"))
-            if cont is None:
-                falhas = u["tentativas_falhas"] + 1
-                espera = seguranca.duracao_bloqueio(falhas)
-                self.banco.executar("UPDATE usuarios SET tentativas_falhas=?, bloqueado_ate=? WHERE id=?",
-                                    (falhas, iso(self.agora_dt() + timedelta(seconds=espera)) if espera else None, u["id"]))
-                raise PrecisaCodigo("Código incorreto ou vencido. Veja o código atual no aplicativo.")
-            self.banco.executar("UPDATE usuarios SET totp_ultimo=? WHERE id=?", (cont, u["id"]))
+        # 2FA/TOTP temporariamente desativado no login, conforme decisão do projeto.
+        # A infraestrutura, segredo e endpoints de 2FA permanecem preservados para reativação futura.
+        # O acesso agora segue somente com e-mail + senha.
+        if iteracoes_senha < seguranca.ITERACOES:
+            salt = seguranca.gerar_salt()
+            self.banco.executar("UPDATE usuarios SET senha_hash=?, senha_salt=?, senha_iteracoes=? WHERE id=?",
+                                (seguranca.hash_senha(senha, salt), salt, seguranca.ITERACOES, u["id"]))
         self.banco.executar("UPDATE usuarios SET tentativas_falhas=0, bloqueado_ate=NULL, ultimo_acesso=? WHERE id=?", (agora, u["id"]))
         return self._abrir_sessao(u, ip)
 
@@ -142,7 +156,7 @@ class ContasMixin:
 
     def trocar_senha(self, ator: Ator, atual: str, nova: str) -> dict:
         u = self.banco.um("SELECT * FROM usuarios WHERE id=?", (ator.usuario_id,))
-        if not u or not seguranca.conferir_senha(atual or "", u["senha_salt"], u["senha_hash"]):
+        if not u or not seguranca.conferir_senha(atual or "", u["senha_salt"], u["senha_hash"], int(u.get("senha_iteracoes") or 200_000)):
             raise ErroNegocio("A senha atual não confere.")
         try:
             seguranca.validar_senha_nova(nova)
@@ -151,8 +165,8 @@ class ContasMixin:
         if nova == atual:
             raise ErroNegocio("A nova senha precisa ser diferente da atual.")
         salt = seguranca.gerar_salt()
-        self.banco.executar("UPDATE usuarios SET senha_hash=?, senha_salt=?, trocar_senha=0 WHERE id=?",
-                            (seguranca.hash_senha(nova, salt), salt, u["id"]))
+        self.banco.executar("UPDATE usuarios SET senha_hash=?, senha_salt=?, senha_iteracoes=?, trocar_senha=0 WHERE id=?",
+                            (seguranca.hash_senha(nova, salt), salt, seguranca.ITERACOES, u["id"]))
         self.auditar(ator, "usuario.senha", u["id"])
         return {"ok": True}
 
@@ -169,10 +183,10 @@ class ContasMixin:
         salt = seguranca.gerar_salt()
         uid = novo_id()
         self.banco.executar(
-            """INSERT INTO usuarios(id, empresa_id, instituicao_id, nome, email, telefone, senha_hash, senha_salt, papel,
-                                    trocar_senha, criado_em) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO usuarios(id, empresa_id, instituicao_id, nome, email, telefone, senha_hash, senha_salt, senha_iteracoes, papel,
+                                    trocar_senha, criado_em) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (uid, empresa_id, instituicao_id, texto(nome, 120, True, "o nome"), e, texto(telefone, 30),
-             seguranca.hash_senha(senha, salt), salt, papel, 1 if trocar else 0, self.agora()))
+             seguranca.hash_senha(senha, salt), salt, seguranca.ITERACOES, papel, 1 if trocar else 0, self.agora()))
         return self.banco.um("SELECT * FROM usuarios WHERE id=?", (uid,))
 
     def cadastrar_cliente(self, dados: dict, ip: str | None = None) -> dict:
@@ -244,8 +258,8 @@ class ContasMixin:
         ator.exigir("usuarios", "editar")
         u = ator.conferir_empresa(self.banco.um("SELECT * FROM usuarios WHERE id=?", (usuario_id,)), "Usuário")
         salt = seguranca.gerar_salt()
-        self.banco.executar("UPDATE usuarios SET senha_hash=?, senha_salt=?, trocar_senha=1, tentativas_falhas=0, bloqueado_ate=NULL WHERE id=?",
-                            (seguranca.hash_senha("1234", salt), salt, usuario_id))
+        self.banco.executar("UPDATE usuarios SET senha_hash=?, senha_salt=?, senha_iteracoes=?, trocar_senha=1, tentativas_falhas=0, bloqueado_ate=NULL WHERE id=?",
+                            (seguranca.hash_senha("1234", salt), salt, seguranca.ITERACOES, usuario_id))
         self.banco.executar("DELETE FROM sessoes WHERE usuario_id=?", (usuario_id,))
         self.auditar(ator, "usuario.redefinir_senha", usuario_id, empresa_id=u["empresa_id"])
         return {"ok": True}
@@ -484,3 +498,86 @@ class ContasMixin:
                                     (chave, conv(dados[chave])))
         self.auditar(ator, "config.plataforma", None, dados, empresa_id=None)
         return self.config_plataforma()
+
+    # ================================================================ RECURSOS E PLANOS POR EMPRESA
+    def _recurso_global(self, chave: str) -> bool:
+        r = self.banco.um("SELECT valor FROM config WHERE chave=?", ("recurso_global:" + chave,))
+        return (r["valor"] != "0") if r else True
+
+    def recursos_plataforma(self, ator: Ator) -> dict:
+        ator.exigir("sistema", "ver")
+        return {"itens": [{"chave": k, "nome": nome, "habilitado": self._recurso_global(k)}
+                          for k, nome in RECURSOS.items()]}
+
+    def salvar_recursos_plataforma(self, ator: Ator, dados: dict) -> dict:
+        ator.exigir("sistema", "ver")
+        recursos = dados.get("recursos") or {}
+        if not isinstance(recursos, dict) or any(k not in RECURSOS or not isinstance(v, bool) for k, v in recursos.items()):
+            raise ErroNegocio("Lista de recursos inválida.")
+        alterados = {}
+        for chave, habilitado in recursos.items():
+            if chave not in RECURSOS or not isinstance(habilitado, bool):
+                raise ErroNegocio("Recurso ou estado inválido.")
+            anterior = self._recurso_global(chave)
+            valor = "1" if habilitado else "0"
+            self.banco.executar("INSERT INTO config(chave, valor) VALUES (?,?) ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor",
+                                ("recurso_global:" + chave, valor))
+            if anterior != habilitado:
+                alterados[chave] = {"de": anterior, "para": habilitado}
+        if alterados:
+            self.auditar(ator, "recursos.padrao_plataforma", None, alterados, empresa_id=None)
+        return self.recursos_plataforma(ator)
+
+    def recursos_empresa(self, ator: Ator, empresa_id: str) -> dict:
+        if ator.plataforma:
+            ator.exigir("sistema", "ver")
+            empresa = self.banco.um("SELECT id, id AS empresa_id, nome FROM empresas WHERE id=?", (empresa_id,))
+        else:
+            empresa = ator.conferir_empresa(self.banco.um("SELECT id, id AS empresa_id, nome FROM empresas WHERE id=?", (empresa_id,)), "Empresa")
+        if not empresa:
+            raise NaoEncontrado("Empresa não encontrada.")
+        sobrescritos = {r["recurso"]: bool(r["habilitado"]) for r in self.banco.todos(
+            "SELECT recurso, habilitado FROM recursos_empresa WHERE empresa_id=?", (empresa_id,))}
+        itens = []
+        for chave, nome in RECURSOS.items():
+            padrao = self._recurso_global(chave)
+            override = sobrescritos.get(chave)
+            itens.append({"chave": chave, "nome": nome, "padrao": padrao, "sobrescrito": override,
+                          "habilitado": padrao and (override if override is not None else True)})
+        return {"empresa_id": empresa_id, "empresa": empresa["nome"], "itens": itens}
+
+    def salvar_recursos_empresa(self, ator: Ator, empresa_id: str, dados: dict) -> dict:
+        ator.exigir("sistema", "ver")
+        if not self.banco.um("SELECT id FROM empresas WHERE id=?", (empresa_id,)):
+            raise NaoEncontrado("Empresa não encontrada.")
+        recursos = dados.get("recursos") or {}
+        if not isinstance(recursos, dict) or any(
+            k not in RECURSOS or not (v is None or isinstance(v, bool)) for k, v in recursos.items()
+        ):
+            raise ErroNegocio("Lista de recursos inválida.")
+        alterados = {}
+        for chave, habilitado in recursos.items():
+            anterior = self.banco.um("SELECT habilitado FROM recursos_empresa WHERE empresa_id=? AND recurso=?",
+                                     (empresa_id, chave))
+            estado_anterior = bool(anterior["habilitado"]) if anterior else None
+            if habilitado is None:
+                self.banco.executar("DELETE FROM recursos_empresa WHERE empresa_id=? AND recurso=?", (empresa_id, chave))
+            else:
+                self.banco.executar("""INSERT INTO recursos_empresa(empresa_id, recurso, habilitado, atualizado_por, atualizado_em)
+                                       VALUES (?,?,?,?,?) ON CONFLICT(empresa_id, recurso) DO UPDATE SET
+                                       habilitado=excluded.habilitado, atualizado_por=excluded.atualizado_por,
+                                       atualizado_em=excluded.atualizado_em""",
+                                    (empresa_id, chave, int(habilitado), ator.usuario_id, self.agora()))
+            if estado_anterior != habilitado:
+                alterados[chave] = {"de": estado_anterior, "para": habilitado}
+        if alterados:
+            self.auditar(ator, "recursos.empresa", empresa_id, alterados, empresa_id=empresa_id)
+        return self.recursos_empresa(ator, empresa_id)
+
+    def recurso_habilitado(self, empresa_id: str, chave: str) -> bool:
+        if chave not in RECURSOS:
+            return False
+        if not self._recurso_global(chave):
+            return False
+        r = self.banco.um("SELECT habilitado FROM recursos_empresa WHERE empresa_id=? AND recurso=?", (empresa_id, chave))
+        return bool(r["habilitado"]) if r else True

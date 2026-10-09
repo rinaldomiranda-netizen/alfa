@@ -9,9 +9,11 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -44,7 +46,21 @@ class TestWeb(unittest.TestCase):
         cls.srv = app.criar_servidor("127.0.0.1", 0)
         cls.base = f"http://127.0.0.1:{cls.srv.server_address[1]}"
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
-        app.plataforma().garantir_admin_sobrou("dono@sobrou.test")
+        plataforma = app.plataforma()
+        pagar_real = plataforma.pagar
+        def pagar_somente_teste(ator, pedido_id, meio="", base_url=None):
+            if meio != "teste":
+                return pagar_real(ator, pedido_id, meio, base_url)
+            with plataforma.banco.transacao() as c:
+                pedido = plataforma._uma(c, "SELECT * FROM pedidos WHERE id=?", (pedido_id,))
+                agora = plataforma.agora()
+                c.execute("""INSERT INTO pagamentos(id, pedido_id, empresa_id, meio, valor_centavos, status, referencia_externa, criado_em, atualizado_em)
+                             VALUES (?,?,?,?,?,'aprovado',?,?,?)""",
+                          (uuid.uuid4().hex, pedido_id, pedido["empresa_id"], "teste", pedido["total_centavos"], "TEST_FIXTURE", agora, agora))
+                plataforma._efetivar_pagamento(c, pedido, ator, "fixture temporária de teste HTTP")
+            return plataforma.obter_pedido(ator, pedido_id)
+        plataforma.pagar = pagar_somente_teste
+        cls.senha_inicial_dono = plataforma.definir_dono("dono@sobrou.test")["senha_inicial_unica"] or "1234"
 
     @classmethod
     def tearDownClass(cls):
@@ -53,16 +69,33 @@ class TestWeb(unittest.TestCase):
 
     def test_fluxo_http_completo(self):
         adm = Cliente(self.base)
-        self.assertEqual(adm.req("POST", "/api/entrar", {"email": "dono@sobrou.test", "senha": "1234"})[0], 200)
+        self.assertEqual(adm.req("POST", "/api/entrar", {"email": "dono@sobrou.test", "senha": self.senha_inicial_dono})[0], 200)
         s, r = adm.req("GET", "/api/empresas")
         self.assertEqual(s, 403)
         self.assertTrue(r.get("trocar_senha"))
-        self.assertEqual(adm.req("POST", "/api/senha", {"atual": "1234", "nova": "1234"})[0], 400)
-        self.assertEqual(adm.req("POST", "/api/senha", {"atual": "1234", "nova": "novaSenha9"})[0], 200)
+        self.assertEqual(adm.req("POST", "/api/senha", {"atual": self.senha_inicial_dono, "nova": self.senha_inicial_dono})[0], 400)
+        self.assertEqual(adm.req("POST", "/api/senha", {"atual": self.senha_inicial_dono, "nova": "novaSenha9"})[0], 200)
+        # 2FA está temporariamente fora do gate de entrada: após trocar a senha,
+        # o administrador já pode acessar as áreas autorizadas normalmente.
+        s, r = adm.req("GET", "/api/empresas")
+        self.assertEqual(s, 200, r)
+        self.assertNotIn("configurar_2fa", r)
+        s, setup = adm.req("POST", "/api/seguranca/2fa/iniciar", {})
+        self.assertEqual(s, 200, setup)
+        contador = int(time.time() // app.seguranca.TOTP_PASSO)
+        s, confirmado = adm.req("POST", "/api/seguranca/2fa/confirmar",
+                                {"codigo": app.seguranca.codigo_totp(setup["segredo"], contador)})
+        self.assertEqual(s, 200, confirmado)
         # parceiro se cadastra → em análise → admin aprova
         par = Cliente(self.base)
         s, r = par.req("POST", "/api/cadastro/empresa", {"nome": "Padoca Web", "tipo": "padaria", "email_responsavel": "p@web.test", "senha": "senhaBoa1", "aceite_termos": True})
         self.assertEqual(s, 200, r)
+        s, setup_par = par.req("POST", "/api/seguranca/2fa/iniciar", {})
+        self.assertEqual(s, 200, setup_par)
+        contador_par = int(time.time() // app.seguranca.TOTP_PASSO)
+        s, confirmado_par = par.req("POST", "/api/seguranca/2fa/confirmar",
+                                    {"codigo": app.seguranca.codigo_totp(setup_par["segredo"], contador_par)})
+        self.assertEqual(s, 200, confirmado_par)
         eid = r["usuario"]["empresa_id"]
         s, u = par.req("POST", "/api/unidades", {"nome": "Loja 1", "lat": -10.9, "lng": -37.0})
         s, f = par.req("POST", "/api/fotos", {"imagem": JPEG})
@@ -84,7 +117,7 @@ class TestWeb(unittest.TestCase):
         cli.req("POST", "/api/cadastro/cliente", {"nome": "Web", "email": "cli@web.test", "senha": "senhaBoa1", "aceite_termos": True})
         s, ped = cli.req("POST", "/api/pedidos", {"itens": [{"oferta_id": o["id"], "quantidade": 2}], "modo": "retirada"})
         self.assertEqual(s, 200, ped)
-        self.assertEqual(cli.req("POST", f"/api/pedidos/{ped['id']}/pagar", {})[1]["status"], "pago")
+        self.assertEqual(cli.req("POST", f"/api/pedidos/{ped['id']}/pagar", {"meio": "teste"})[1]["status"], "pago")
         for acao in ("receber", "preparar", "pronto"):
             self.assertEqual(par.req("POST", f"/api/pedidos/{ped['id']}/avancar", {"acao": acao})[0], 200)
         s, fim = par.req("POST", "/api/retirada", {"codigo": f"{ped['numero']}-{ped['codigo_retirada']}"})
@@ -93,6 +126,12 @@ class TestWeb(unittest.TestCase):
         # outra empresa não enxerga
         out = Cliente(self.base)
         out.req("POST", "/api/cadastro/empresa", {"nome": "Outra", "tipo": "cafe", "email_responsavel": "o@web.test", "senha": "senhaBoa1", "aceite_termos": True})
+        s, setup_out = out.req("POST", "/api/seguranca/2fa/iniciar", {})
+        self.assertEqual(s, 200, setup_out)
+        contador_out = int(time.time() // app.seguranca.TOTP_PASSO)
+        s, confirmado_out = out.req("POST", "/api/seguranca/2fa/confirmar",
+                                    {"codigo": app.seguranca.codigo_totp(setup_out["segredo"], contador_out)})
+        self.assertEqual(s, 200, confirmado_out)
         self.assertEqual(out.req("GET", f"/api/pedidos/{ped['id']}")[0], 404)
         self.assertEqual(out.req("GET", f"/api/ofertas/{o['id']}")[0], 404)
         self.assertEqual(out.req("GET", f"/api/pedidos?empresa_id={eid}")[0], 403)

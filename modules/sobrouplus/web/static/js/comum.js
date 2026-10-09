@@ -1,7 +1,9 @@
 /* Sobrou+ — funções comuns às três telas (consumidor, painel, entregador). */
 "use strict";
 // Quando o Sobrou+ é servido dentro de outro endereço (ex.: https://…/sobrou/), tudo é prefixado.
-const BASE_SOBROU = location.pathname.startsWith("/sobrou") ? "/sobrou" : "";
+// Cada aplicativo instalável tem o seu endereço (/apps/caixa/, /apps/loja/...): tudo continua dentro dele.
+const APP_SOBROU = (location.pathname.match(/\/apps\/(central|loja|caixa|entregador|cliente)(?=\/|$)/) || [])[1] || "";
+const BASE_SOBROU = (location.pathname.startsWith("/sobrou") ? "/sobrou" : "") + (APP_SOBROU ? "/apps/" + APP_SOBROU : "");
 const S = {
   u(caminho) { return caminho && caminho.startsWith("/") ? BASE_SOBROU + caminho : caminho; },
   async api(caminho, opcoes = {}) {
@@ -140,9 +142,12 @@ const S = {
     if (!m || !de || !para || de[0] === null || para[0] === null) return null;
     try {
       const r = await S.api(`/api/mapa/rota?de=${de[0]},${de[1]}&para=${para[0]},${para[1]}`);
-      const linha = r.linha && r.linha.length ? r.linha : [de, para];
-      L.polyline(linha, { color: cor, weight: 5, opacity: .85, dashArray: r.fonte === "ruas" ? null : "6 8" }).addTo(m);
-      m.fitBounds(L.latLngBounds(linha).pad(0.25));
+      if (r.fonte !== "ruas" || !r.linha || !r.linha.length) {
+        S.toast("Rota pelas ruas indisponível agora. Abra Google Maps ou Waze para navegar.", true);
+        return r;
+      }
+      L.polyline(r.linha, { color: cor, weight: 5, opacity: .85 }).addTo(m);
+      m.fitBounds(L.latLngBounds(r.linha).pad(0.25));
       return r;
     } catch (e) { return null; }
   },
@@ -170,6 +175,9 @@ const S = {
 /* ---------------- app instalável, atualização automática e aviso no celular ---------------- */
 S.versao = null;
 S.iniciarApp = function () {
+  if (S._iniciado) return;
+  S._iniciado = true;
+  S.barraInstalar();
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register(S.u("/sw.js")).catch(() => null);
   }
@@ -187,6 +195,39 @@ S.iniciarApp = function () {
   conferir(); setInterval(conferir, 5 * 60 * 1000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) conferir(); });
 };
+/* ---------------- instalar o aplicativo (cada perfil é um app separado no celular) ---------------- */
+S.app = APP_SOBROU;
+S.NOMES_APPS = { central: "Sobrou+ Central", loja: "Sobrou+ Loja", caixa: "Sobrou+ Caixa", entregador: "Sobrou+ Entregador", cliente: "Sobrou+ Cliente" };
+let pedidoInstalar = null;
+window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); pedidoInstalar = e; S.barraInstalar(); });
+window.addEventListener("appinstalled", () => { pedidoInstalar = null; const b = document.getElementById("barra-instalar"); if (b) b.remove(); S.toast("Instalado! Procure o ícone na tela do celular."); });
+S.barraInstalar = function () {
+  if (!S.app) return;
+  const instalado = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  let fechado = false;
+  try { fechado = sessionStorage.getItem("sob_instalar_fechado") === "1"; } catch (e) { /* sem armazenamento */ }
+  const antiga = document.getElementById("barra-instalar");
+  if (antiga) antiga.remove();
+  if (instalado || fechado) return;
+  const nome = S.NOMES_APPS[S.app];
+  const iphone = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+  const fechar = S.h("button", { class: "btn btn-p", style: { background: "transparent", color: "#fff", border: "2px solid #fff" }, "aria-label": "Fechar", onclick: () => { try { sessionStorage.setItem("sob_instalar_fechado", "1"); } catch (e) {} barra.remove(); } }, "Agora não");
+  let acao;
+  if (pedidoInstalar) {
+    acao = S.h("button", { class: "btn btn-p btn-cta", onclick: async () => { pedidoInstalar.prompt(); try { await pedidoInstalar.userChoice; } catch (e) {} pedidoInstalar = null; } }, "Instalar " + nome);
+  } else if (iphone) {
+    acao = S.h("span", {}, "No iPhone: toque em ", S.h("b", {}, "Compartilhar"), " (quadrado com seta) e depois em ", S.h("b", {}, "Adicionar à Tela de Início"), ".");
+  } else {
+    acao = S.h("span", {}, "Para instalar: abra o menu do navegador (⋮) e toque em ", S.h("b", {}, "Instalar app"), " ou ", S.h("b", {}, "Adicionar à tela inicial"), ".");
+  }
+  const barra = S.h("div", { id: "barra-instalar", role: "region", "aria-label": "Instalar o aplicativo",
+    style: { position: "fixed", left: "0", right: "0", bottom: "0", "z-index": "9999", background: "#0A563A", color: "#fff", padding: ".7rem 1rem",
+      display: "flex", gap: ".6rem", "align-items": "center", "flex-wrap": "wrap", "box-shadow": "0 -4px 16px rgba(0,0,0,.25)", "font-size": ".95rem" } },
+    S.h("img", { src: `static/img/apps/${S.app}-192.png`, alt: "", style: { width: "40px", height: "40px", "border-radius": "10px" } }),
+    S.h("div", { style: { flex: "1", "min-width": "180px" } }, S.h("b", {}, nome), S.h("div", {}, acao)), fechar);
+  document.body.append(barra);
+};
+
 S.avisosSuportados = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 S.ligarAvisos = async function () {
   if (!S.avisosSuportados()) throw new Error("Este aparelho/navegador não aceita aviso com o app fechado. No iPhone, primeiro adicione o Sobrou+ à Tela de Início.");
@@ -225,18 +266,52 @@ S.esqueciSenha = function (emailInicial = "") {
 };
 
 /* ---------------- link de acesso (convite) ---------------- */
-S.mostrarConvite = function (c) {
-  const link = location.origin + S.u(c.caminho);
-  const msg = `Olá, ${c.nome}! Seu acesso ao Sobrou+${c.empresa ? " (" + c.empresa + ")" : ""} como ${c.papel_nome} está pronto. Abra o link, crie sua senha e entre: ${link} (vale ${c.validade_dias} dias)`;
+S.mostrarConvite = async function (c) {
+  let cfg = {};
+  try { cfg = await S.api("/api/config"); } catch (e) {}
+  // A URL atual do servidor tem prioridade; convites antigos podem conter endereço obsoleto.
+  const origem = (cfg.url_acesso || c.url_acesso || location.origin || "").replace(/\/+$/, "");
+  const caminho = String(c.caminho || "").startsWith("/") ? c.caminho : "/" + String(c.caminho || "");
+  const link = origem + caminho;
+  const msg = link;
+  const token = new URL(c.caminho || "", location.origin).searchParams.get("c") || "";
   const tel = (c.telefone || "").replace(/\D/g, "");
-  const wa = "https://wa.me/" + (tel ? (tel.length <= 11 ? "55" + tel : tel) : "") + "?text=" + encodeURIComponent(msg);
+  const telIntl = tel ? (tel.startsWith("55") ? tel : (tel.length === 10 || tel.length === 11 ? "55" + tel : tel)) : "";
+  const wa = "https://wa.me/" + telIntl + "?text=" + encodeURIComponent(msg);
+  const email = `mailto:${encodeURIComponent(c.email || "")}?subject=${encodeURIComponent("Seu acesso ao Sobrou+")}&body=${encodeURIComponent(msg)}`;
+
+  const whatsapp = S.h("button", { class: "btn btn-verde", onclick: async () => {
+    try {
+      const r = await S.api(`/api/usuarios/${encodeURIComponent(c.usuario_id || "")}/convite/whatsapp`, { corpo: { token, url_acesso: origem } });
+      S.toast(r.mensagem || "Link enviado pelo WhatsApp.");
+    } catch (e) {
+      const janela = window.open(wa, "_blank", "noopener,noreferrer");
+      if (!janela) location.href = wa;
+      S.toast("WhatsApp aberto com a mensagem pronta. Confira o destinatário e toque em Enviar.");
+    }
+  } }, "Enviar por WhatsApp");
+
+  const emailBotao = S.h("button", { class: "btn btn-linha", onclick: async () => {
+    try {
+      const r = await S.api(`/api/usuarios/${encodeURIComponent(c.usuario_id || "")}/convite/email`, { corpo: { token, url_acesso: origem } });
+      S.toast(r.mensagem || "E-mail enviado.");
+    } catch (e) {
+      location.href = email;
+      S.toast("Seu aplicativo de e-mail foi aberto com o link pronto para envio.");
+    }
+  } }, "Enviar por e-mail");
+
   S.folha(S.h("div", {}, S.h("h2", {}, "Link de acesso pronto"),
     S.h("p", {}, `Envie para ${c.nome} (${c.papel_nome}). A pessoa abre, cria a própria senha e já entra. O link vale ${c.validade_dias} dias e só funciona uma vez.`),
-    S.h("div", { class: "copia" }, link),
+    S.h("a", { class: "copia", href: link, target: "_blank", rel: "noopener noreferrer", title: "Abrir link de acesso" }, link),
     S.h("div", { class: "linha", style: { "margin-top": ".8rem" } },
-      S.h("button", { class: "btn btn-escuro", onclick: async () => { try { await navigator.clipboard.writeText(msg); S.toast("Mensagem com o link copiada."); } catch (e) { S.toast("Selecione e copie o link acima.", true); } } }, "Copiar mensagem"),
-      S.h("a", { class: "btn btn-verde", href: wa, target: "_blank", rel: "noopener" }, "Enviar por WhatsApp"),
-      S.h("a", { class: "btn btn-linha", href: `mailto:${c.email}?subject=${encodeURIComponent("Seu acesso ao Sobrou+")}&body=${encodeURIComponent(msg)}` }, "Enviar por e-mail"))));
+      S.h("button", { class: "btn btn-escuro", onclick: async () => {
+        try { await navigator.clipboard.writeText(msg); S.toast("Mensagem com o link copiada."); }
+        catch (e) { S.toast("Selecione e copie o link acima.", true); }
+      } }, "Copiar mensagem"),
+      whatsapp,
+      emailBotao
+    )));
 };
 
 /* ---------------- modo teste do Desenvolvedor ---------------- */

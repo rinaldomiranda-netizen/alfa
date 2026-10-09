@@ -2,6 +2,27 @@
 "use strict";
 const h = S.h;
 const E = { cfg: {}, eu: null, local: null, filtros: { categoria: "todos" }, favoritos: [], itens: [] };
+
+let statusPedidoVisto = {};
+function alertaMudancaPedido(p) {
+  const anterior = statusPedidoVisto[p.id];
+  statusPedidoVisto[p.id] = p.status;
+  if (!anterior || anterior === p.status || localStorage.getItem("sobrou_cliente_som") !== "1") return;
+  try { const C=window.AudioContext||window.webkitAudioContext; const a=new C(); const o=a.createOscillator(); const g=a.createGain(); o.frequency.value=660; g.gain.value=.1; o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime+.3); } catch(e) {}
+}
+
+function telemetria(tipo, empresa_id = null, oferta_id = null) {
+  try {
+    let visitante = sessionStorage.getItem("sob_visita");
+    if (!visitante) {
+      visitante = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + "-" + Math.random().toString(36).slice(2));
+      sessionStorage.setItem("sob_visita", visitante);
+    }
+    const evento_id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + "-" + Math.random().toString(36).slice(2);
+    fetch(S.u("/api/telemetria"), { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ visitante, evento_id, tipo, empresa_id, oferta_id }), keepalive: true }).catch(() => {});
+  } catch (e) { /* navegação não depende da telemetria */ }
+}
 const ICONES = {
   inicio: "M3 11l9-8 9 8v10a1 1 0 0 1-1 1h-5v-7h-6v7H4a1 1 0 0 1-1-1z",
   ofertas: "M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8zM7.5 8.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z",
@@ -25,6 +46,7 @@ async function iniciar() {
   try { E.eu = await S.api("/api/eu"); S.tema(E.eu.tema); } catch (e) { E.eu = null; }
   if (E.eu && E.eu.usuario.papel !== "cliente") { /* conta de empresa/entregador: mostra o atalho certo */ }
   if (E.eu && E.eu.usuario.papel === "cliente") E.favoritos = (await S.api("/api/favoritos").catch(() => ({ empresas: [] }))).empresas;
+  telemetria("visita");
   try { E.local = JSON.parse(sessionStorage.getItem("sob_local") || "null"); } catch (e) { E.local = null; }
   desenharTopo(); desenharMenu();
   window.addEventListener("hashchange", rotear);
@@ -160,6 +182,7 @@ function cartaoOferta(o) {
 async function abrirOferta(id) {
   let o;
   try { o = await S.api("/api/vitrine/" + id); } catch (e) { S.toast(e.message, true); location.hash = "#inicio"; return; }
+  telemetria("loja", o.empresa_id); telemetria("oferta", o.empresa_id, o.id);
   const est = { q: 1, modo: o.permite_retirada ? "retirada" : "entrega", endereco: "", lat: E.local && E.local.lat, lng: E.local && E.local.lng };
   const max = Math.min(o.disponivel, o.limite_por_cliente);
   const caixaTotal = h("div", { class: "resumo-total" });
@@ -211,8 +234,10 @@ async function abrirOferta(id) {
     if (!E.eu) { folha.fechar(); location.hash = "#perfil"; S.toast("Entre ou crie sua conta para comprar."); return; }
     if (E.eu.usuario.papel !== "cliente") { S.toast("Você está com uma conta de empresa. Saia e entre como cliente para comprar.", true); return; }
     btn.disabled = true;
+    telemetria("checkout", o.empresa_id, o.id);
     try {
       const p = await S.acao(() => S.api("/api/pedidos", { corpo: corpoPedido() }));
+      telemetria("pedido", o.empresa_id, o.id);
       folha.fechar(); location.hash = "#pedido/" + p.id;
     } catch (e) { btn.disabled = false; }
   }
@@ -266,11 +291,11 @@ async function telaPedidos(alvo) {
 
 let vigiaPagamento = null;
 async function caixaPagamento(p) {
-  const meios = await S.api("/api/meios-pagamento").catch(() => ({ teste: true }));
+  const meios = await S.api("/api/meios-pagamento").catch(() => ({ teste: false, pix: false, cartao: false, boleto: false }));
   const fim = new Date(p.reserva_expira_em);
   const caixa = h("div", { class: "cartao", style: { margin: "1rem 0" } });
   const area = h("div");
-  const pendente = (p.pagamentos || []).find((g) => g.status === "pendente");
+  const pendente = (p.pagamentos || []).find((g) => ["pendente", "em_analise"].includes(g.status));
   const vigiar = () => {
     clearInterval(vigiaPagamento);
     vigiaPagamento = setInterval(async () => {
@@ -289,18 +314,14 @@ async function caixaPagamento(p) {
   };
   const iniciar = async (meio) => {
     const r = await S.acao(() => S.api(`/api/pedidos/${p.id}/pagar`, { corpo: { meio } }));
-    if (meio === "teste") { S.toast("Pagamento de teste aprovado!"); return rotear(); }
     const g = r.pagamento_iniciado;
     if (meio === "pix") mostrarPix(g);
     else if (g.link_pagamento) { S.limpar(area, h("a", { class: "btn btn-cta btn-bloco", href: g.link_pagamento, target: "_blank", rel: "noopener" }, "Abrir pagamento com cartão (Mercado Pago)"),
       h("p", { class: "mudo" }, "Depois de pagar, volte aqui: a tela atualiza sozinha.")); vigiar(); }
   };
   const botoes = [];
-  if (meios.pix) botoes.push(h("button", { class: "btn btn-cta btn-bloco", onclick: () => iniciar("pix") }, `Pagar ${S.dinheiro(p.total_centavos)} com Pix`));
-  if (meios.cartao) botoes.push(h("button", { class: "btn btn-escuro btn-bloco", style: { "margin-top": ".5rem" }, onclick: () => iniciar("cartao") }, "Pagar com cartão"));
-  if (meios.teste) botoes.push(h("div", { class: "aviso-teste" }, meios.pix ? "Pagamento de teste liberado pela equipe Sobrou+." :
-    "MODO TESTE: Pix e cartão reais ainda não foram ativados. Este botão simula um pagamento aprovado — nenhum dinheiro é cobrado."),
-    h("button", { class: "btn btn-linha btn-bloco", onclick: () => iniciar("teste") }, `Pagar ${S.dinheiro(p.total_centavos)} (teste)`));
+  if (meios.gateway_configurado) botoes.push(h("button", { class: "btn btn-cta btn-bloco", onclick: () => iniciar("checkout") }, `Pagar ${S.dinheiro(p.total_centavos)} · Pix, cartão ou boleto`));
+  if (!meios.gateway_configurado) botoes.push(h("div", { class: "aviso-teste" }, "Pagamento online ainda não configurado. Este pedido não será marcado como pago até a confirmação do gateway."));
   S.limpar(caixa, h("h2", {}, "Pagamento"), h("p", {}, `Reservamos para você até ${S.hora(p.reserva_expira_em)} (${Math.max(0, Math.round((fim - Date.now()) / 60000))} min).`), botoes, area);
   if (pendente && pendente.meio === "pix" && pendente.qr_code) mostrarPix(pendente);
   return caixa;
@@ -310,9 +331,11 @@ async function telaPedido(alvo, id) {
   if (!exigirLogin(alvo)) return;
   let p;
   try { p = await S.api("/api/pedidos/" + id); } catch (e) { return S.limpar(alvo, h("div", { class: "vazio" }, e.message)); }
+  alertaMudancaPedido(p);
   const blocos = [h("a", { href: "#pedidos", class: "mudo" }, "← Meus pedidos"),
     h("div", { class: "linha", style: { margin: ".5rem 0" } }, h("h1", { style: { margin: 0 } }, `Pedido #${p.numero}`), h("span", { style: { flex: "0 0 auto" } }, S.selo(p.status_nome, S.SELO_PEDIDO[p.status]))),
-    h("div", { class: "mudo" }, `${p.empresa} · ${p.unidade.nome}`)];
+    h("div", { class: "mudo" }, `${p.empresa} · ${p.unidade.nome}`),
+    h("button", { class: "btn btn-linha btn-p", onclick: () => { localStorage.setItem("sobrou_cliente_som", "1"); S.toast("Avisos sonoros ativados para este pedido."); } }, "Ativar aviso sonoro")];
   if (p.status === "aguardando_pagamento") {
     blocos.push(await caixaPagamento(p));
   }
@@ -390,6 +413,18 @@ async function telaPerfil(alvo) {
       if (i) blocos.push(h("div", { class: "faixa-impacto", style: { "margin-top": "1rem" } },
         h("div", {}, "Comida que você salvou", h("b", {}, S.kg(i.kg_vendidos))), h("div", {}, "Você economizou", h("b", {}, S.dinheiro(i.economia_clientes_centavos))),
         h("div", {}, "Pedidos", h("b", {}, String(i.pedidos)))));
+      const reputacao = await S.api("/api/minha-reputacao").catch(() => null);
+      if (reputacao) blocos.push(h("div", { class: "cartao", style: { "margin-top": "1rem" } },
+        h("h3", {}, "Sua reputação no Sobrou+"),
+        h("div", { class: "linha" }, h("span", {}, "Nota média dos parceiros"),
+          h("b", {}, reputacao.media === null ? "Ainda sem avaliações" : `${reputacao.media.toLocaleString("pt-BR")} ★ · ${reputacao.total} pedido(s)`)),
+        h("div", { class: "linha", style: { "margin-top": ".5rem" } }, h("span", {}, "Pontos de fidelidade"),
+          h("b", {}, String(reputacao.pontos))),
+        h("p", { class: "mudo" }, "Você recebe 1 ponto por real em pedidos concluídos. A nota que você recebe não muda seus pontos."),
+        reputacao.itens.length ? h("div", { style: { "margin-top": ".7rem" } }, reputacao.itens.map((a) => h("div", { class: "cartao", style: { "margin-top": ".4rem" } },
+          h("div", { class: "linha" }, h("b", {}, a.loja), h("span", { class: "estrelas" }, "★".repeat(a.nota) + "☆".repeat(5 - a.nota))),
+          h("div", { class: "mudo" }, `Pedido #${a.numero} · ${S.data(a.criada_em)}`),
+          a.comentario ? h("p", {}, a.comentario) : null))) : null));
     } else {
       blocos.push(h("p", {}, "Esta conta é de ", h("b", {}, u.papel_nome), ". ", h("a", { href: u.papel === "entregador" ? S.u("/entregador") : S.u("/painel") }, "Abrir a minha área")));
     }

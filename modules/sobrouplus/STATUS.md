@@ -1,8 +1,38 @@
 # Sobrou+ — status real (regra de verdade)
 
 Estados usados: IMPLEMENTADO E VALIDADO · IMPLEMENTADO MAS NÃO VALIDADO EM AMBIENTE REAL · PARCIAL · PENDENTE · BLOQUEADO POR DEPENDÊNCIA.
-"Validado" aqui = coberto por teste automático que passou (`Testar Sobrou+.bat`, 21 testes) e conferido nas telas.
-Nada disso foi usado ainda por loja/cliente real.
+Nesta revisão, "validado" para pagamentos significa coberto por 48 testes automatizados em banco temporário; nenhum pagamento real foi criado nem confirmado.
+
+## 04/10/2026 — avaliações bilaterais e fidelidade
+
+- Cliente e empresa podem avaliar a outra parte de 1 a 5 estrelas após pedido concluído, no máximo uma vez por pedido; comentários são opcionais.
+- Nota média da empresa continua alimentando a vitrine. A reputação do cliente e as avaliações recebidas ficam no perfil/áreas autorizadas, sem publicação pública.
+- O cliente ganha automaticamente 1 ponto por real em pedido concluído; o crédito é único e independente das estrelas. Pontos aparecem no perfil.
+- Pontos nesta etapa não são dinheiro nem desconto; a conversão em benefício financeiro depende de definir quem financia o custo.
+- Migração 13 cria tabelas restritas por pedido para avaliações de clientes e pontos de fidelidade; avaliações do cliente ficam privadas para a empresa envolvida e plataforma autorizada.
+- Validação final: compilação Python, sintaxe dos quatro scripts JavaScript e 48 testes automatizados aprovados em banco temporário.
+
+## 04/10/2026 — preparação para pagamentos online reais
+
+- Backend estruturado para Mercado Pago Checkout Pro: criação idempotente de cobrança, referência exata ao pedido, consulta no servidor, confirmação por webhook assinado, cancelamento, estorno, parcelas e conciliação.
+- Cartão, Pix e boleto ficam no checkout hospedado e dependem da disponibilidade da conta Mercado Pago. Dados de cartão não passam pelo Sobrou+.
+- Pagamento real permanece desligado até informar credenciais separadas de sandbox/produção e uma URL HTTPS pública de webhook no ambiente do servidor.
+- Tela administrativa de pagamentos lista pedido, cliente, valor, método, status, identificadores, datas e resumo higienizado da resposta; ações de cancelar e estornar chamam o provedor.
+- Segredos são lidos do ambiente do servidor. O painel não os grava nem recebe access token. O navegador de retorno não aprova pagamentos.
+- PagBank: adaptador ainda não implementado; a estrutura comum está pronta, mas usar PagBank exigirá escrever e validar o adaptador específico. Esta versão não deve ser anunciada como integração PagBank pronta.
+- Verificações finais: compilação Python, sintaxe dos quatro scripts JavaScript e 48 testes passaram em banco descartável; transporte de teste, sem cobrança ao vivo.
+- O código está no módulo local Desktop\\ALFA\\modules\\sobrouplus; ainda não está publicado no serviço hospedado. A ativação online também depende de implantação, credenciais e configuração do webhook no provedor.
+
+## 04/10/2026 — revisão anterior das integrações e fluxo de demonstração
+
+- Mercado Pago: cada tentativa Pix/cartão agora grava seu identificador antes de chamar o provedor e repete a mesma chave de idempotência em caso de timeout, evitando outra cobrança ao repetir a chamada.
+- Webhook de pagamento: assinatura secreta passou a ser obrigatória; sem segredo ou com assinatura inválida o sistema não libera o pedido.
+- Cliente → empresa → retirada → avaliação: a avaliação já estava ligada ao pedido concluído. O cliente avalia após concluir; a empresa lê e responde no painel, e a nota alimenta a vitrine.
+- Banco separado de demonstração ganhou fluxos fictícios: pedido #1001 concluído por retirada e avaliado com 5 estrelas; pedido #1002 pago e enviado à fila do Dispatch. O pedido #1000 existente permanece como pedido pago. Pagamentos são exclusivamente de teste.
+- APIs públicas local (8096) e publicada responderam HTTP 200 em saúde, configuração e vitrine (5 ofertas). Pedido sem autenticação respondeu HTTP 401, conforme esperado.
+- Atalho do Laboratório corrigido para validar o segredo atual do banco de demonstração. Painel da empresa, app do cliente e app do entregador foram abertos no navegador local; configurações, pedido, avaliação e Dispatch conferidos visualmente.
+- Suíte atual: 46 testes passaram, incluindo repetição idempotente do Pix e rejeição de webhook sem segredo.
+- Alterações estão no módulo local do ALFA. A versão hospedada respondeu, mas não recebeu este código; precisa ser atualizada para levar as correções à internet.
 
 ## 03/10/2026 — Claude — versão 0.3.0 (no ar em https://rmd-atendimento-web-production.up.railway.app/sobrou/)
 
@@ -90,3 +120,27 @@ copiado nem declarado como copiado. O RMD Delivery original não foi tocado.
 Arquivos de referência citados no combinado (SobrouPlus_Logo_Aprovada.png, SobrouPlus_V2_Identidade_Aprovada.html,
 SobrouPlus_Sistema_V1_RMD_Base.html): **não encontrados** nas pastas ligadas a esta sessão.
 Encontrado só: `Desktop\SobrouPlus_WhatsApp\` (SobrouPlus_Computador.html, SobrouPlus_Celular.html — protótipos visuais).
+
+## 04/10/2026 — rotas, despacho, ocorrências e análise de marketing
+
+- O mapa do painel e do entregador agora desenha somente a geometria viária retornada pelo roteador. Se o OSRM estiver indisponível, a tela avisa e não desenha uma linha reta como se fosse rota; estimativas de distância continuam identificadas como estimativa.
+- Despacho sequencial com 60 segundos por oferta, candidatos próximos ordenados usando rotas viárias em cache para até cinco candidatos; fim da fila muda para “falhou”, avisa a empresa e permite reiniciar a busca sem selecionar um entregador.
+- Entregador tem links para Google Maps e Waze, alerta sonoro ativável, e registro autenticado de ocorrência (recusa do cliente, ausência ou não pagamento), que interrompe a corrida e avisa cliente e empresa.
+- Cliente recebe o aviso “Aguardando entregador” e notificações de estado; painel de Dispatch atualiza automaticamente e pode emitir alerta sonoro após ativação.
+- Migrações 14 e 15 criam eventos pseudônimos de navegação e ocorrências de entrega. O painel “Análise e marketing” é exclusivo da plataforma; mostra acessos, visitas por empresa, ofertas, checkout, pedidos, conversão, desistências e recomendações baseadas nos dados disponíveis. Retenção analítica: 90 dias; não registra IP, nome, e-mail ou texto digitado.
+- Os números analíticos começam na publicação desta versão; não há histórico importado nem dados fictícios.
+- Pagamento presencial no app do entregador não foi ativado. A tentativa de separar pagamento pendente do fluxo de pedido foi rejeitada pelo revisor automático por risco de o sistema interpretar a aceitação da loja como pagamento confirmado; a implementação parcial foi removida. A confirmação presencial precisa de desenho seguro separado antes de ser adicionada.
+- Verificação: compilação Python e sintaxe dos três JavaScripts passaram; relatório de marketing/telemetria e registro de ocorrência foram exercitados em banco temporário. Na suíte completa, 47/48 testes passaram e houve erro em `test_avaliacao_bilateral_e_pontos_unicos`; esse teste e a classe de avaliações passaram quando executados isoladamente. Resultado da suíte completa não fica marcado como totalmente aprovado.
+- Alterações permanecem no módulo local Desktop\\ALFA\\modules\\sobrouplus; não foram publicadas nem acionaram cobrança/entrega reais.
+
+
+## 04/10/2026 — segurança, liberação de recursos e privacidade operacional
+
+- Migração 16 adiciona liberação global e por empresa de módulos, com herança do padrão da plataforma e auditoria das alterações. A interface esconde recursos bloqueados e a API também recusa as operações; pedidos existentes continuam consultáveis pelo cliente.
+- Migração 17 registra o custo de hash por usuário. Senhas novas e redefinidas usam PBKDF2-HMAC-SHA256 com 600.000 iterações; contas antigas continuam entrando com o custo registrado e migram para o custo atual após autenticação correta.
+- Administrador Sobrou+ e administrador de empresa precisam cadastrar TOTP antes de usar as áreas administrativas. Instalação nova recebe senha inicial aleatória, exibida uma única vez no terminal e com troca obrigatória; senha padrão antiga exige troca.
+- Servidor configurado como público recusa inicialização sem a indicação explícita de HTTPS. Novas variáveis documentadas em .env.example.
+- GPS: posição atual é usada para despacho enquanto entregador está disponível e para acompanhar uma entrega ativa. O sistema deixa de gravar novas trilhas de posição; trilhas antigas daquele entregador são apagadas no próximo envio de posição ou quando fica offline. Posição atual é limpa ao ficar offline sem corrida ativa e ao encerrar a última corrida estando offline.
+- Análise de visitas e conversão já existente usa identificador pseudônimo, sem IP, nome, e-mail ou conteúdo livre, e retém eventos por até 90 dias. A liberação gradual por empresa usa os recursos globais/individuais já disponíveis.
+- Validação: 48 testes automatizados aprovados em banco temporário; compilação Python e sintaxe dos JavaScript aprovadas. Avisos ResourceWarning foram emitidos pelos testes HTTP que exercitam respostas 4xx esperadas.
+- Estado: alterações locais no módulo ALFA\\modules\\sobrouplus; não publicado. Pagamentos reais ainda dependem de credenciais do gateway, webhook HTTPS e implantação; adaptador PagBank continua pendente.

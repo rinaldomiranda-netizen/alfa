@@ -1,9 +1,17 @@
 /* Sobrou+ — app do entregador: online/offline, GPS real do celular, aceitar/recusar corrida, coleta e entrega com o código do cliente. */
 "use strict";
 const h = S.h;
-const X = { cfg: {}, eu: null, dados: null, vigia: null, ultimaPos: 0, gps: "GPS desligado" };
+const X = { cfg: {}, eu: null, dados: null, vigia: null, ultimaPos: 0, gps: "GPS desligado", som: false, ofertasVistas: new Set() };
+
+function tocarAlerta() {
+  if (!X.som) return;
+  try { const C = window.AudioContext || window.webkitAudioContext; const a = new C(); const o = a.createOscillator(); const g = a.createGain();
+    o.frequency.value = 880; g.gain.value = 0.12; o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + 0.22);
+  } catch (e) { /* o aparelho pode não permitir som */ }
+}
 
 async function iniciar() {
+  X.som = localStorage.getItem("sobrou_som") === "1";
   X.cfg = await S.api("/api/config").catch(() => ({}));
   S.tema(X.cfg.tema);
   try { X.eu = await S.api("/api/eu"); } catch (e) { return login(); }
@@ -39,6 +47,10 @@ function trocaSenha() {
 
 async function carregar() {
   try { X.dados = await S.api("/api/entregador"); } catch (e) { if (e.status === 401) return login(); }
+  if (X.dados) {
+    const novas = X.dados.ativas.filter((c) => c.status === "ofertada" && !X.ofertasVistas.has(c.id));
+    if (novas.length) { tocarAlerta(); novas.forEach((c) => X.ofertasVistas.add(c.id)); }
+  }
   if (X.dados && X.dados.entregador.online) ligarGPS(); else desligarGPS();
   const digitando = document.activeElement && document.activeElement.tagName === "INPUT" && document.activeElement.value;
   const assinatura = X.dados ? JSON.stringify([X.dados.entregador.online, X.dados.ativas.map((c) => [c.id, c.status]), X.dados.ganhos_total_centavos]) : "";
@@ -59,7 +71,9 @@ function ligarGPS() {
 }
 function desligarGPS() { if (X.vigia !== null) { navigator.geolocation.clearWatch(X.vigia); X.vigia = null; } X.gps = "GPS desligado (offline)"; }
 
-const mapa = (lat, lng) => lat !== null && lat !== undefined ? h("a", { href: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`, target: "_blank", rel: "noopener" }, "Abrir rota no mapa") : null;
+const mapa = (lat, lng) => lat !== null && lat !== undefined ? h("div", { class: "linha" },
+  h("a", { href: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`, target: "_blank", rel: "noopener" }, "Google Maps"),
+  h("a", { href: `https://waze.com/ul?ll=${lat}%2C${lng}&navigate=yes`, target: "_blank", rel: "noopener" }, "Waze")) : null;
 
 function desenhar() {
   if (!X.dados) return;
@@ -76,7 +90,14 @@ function desenhar() {
     else if (c.status === "em_coleta") acoes.push(h("button", { class: "btn btn-cta btn-bloco", onclick: () => ir(`/api/entregador/corridas/${c.id}/avancar`, { acao: "coletei" }, "Coleta confirmada. Boa entrega!") }, "Peguei o pedido"));
     else if (c.status === "em_rota") {
       const cod = h("input", { inputmode: "numeric", maxlength: 4, placeholder: "Código do cliente (4 dígitos)", style: { "font-size": "1.3rem", "text-align": "center" } });
-      acoes.push(cod, h("button", { class: "btn btn-verde btn-bloco", style: { "margin-top": ".5rem" }, onclick: () => ir(`/api/entregador/corridas/${c.id}/avancar`, { acao: "entreguei", codigo: cod.value.trim() }, "Entrega confirmada!") }, "Confirmar entrega"));
+      acoes.push(cod, h("button", { class: "btn btn-verde btn-bloco", style: { "margin-top": ".5rem" }, onclick: () => ir(`/api/entregador/corridas/${c.id}/avancar`, { acao: "entreguei", codigo: cod.value.trim() }, "Entrega confirmada!") }, "Confirmar entrega"),
+        h("button", { class: "btn btn-linha btn-bloco", style: { "margin-top": ".5rem" }, onclick: async () => {
+          const escolha = prompt("Ocorrência: 1 cliente recusou o pedido, 2 não pagou, 3 cliente ausente, 4 outro motivo.");
+          const tipo = { "1": "cliente_recusou", "2": "cliente_nao_pagou", "3": "cliente_ausente", "4": "outro" }[escolha];
+          if (!tipo) return;
+          const descricao = prompt("Detalhe opcional para a loja/logística:") || "";
+          await ir(`/api/entregador/corridas/${c.id}/problema`, { tipo, descricao }, "Ocorrência enviada à loja e à logística.");
+        } }, "Registrar problema na entrega"));
     }
     return h("div", { class: "cartao corrida " + c.status },
       h("div", { class: "linha" }, h("h2", { style: { margin: 0 } }, `Pedido #${c.numero}`), h("span", { style: { "text-align": "right" } }, S.selo(S.dinheiro(c.ganho_centavos), "ok"))),
@@ -90,7 +111,8 @@ function desenhar() {
   moldura(
     h("div", { class: "cartao" }, h("div", { class: "interruptor" }, h("div", {}, h("h2", { style: { margin: 0 } }, X.eu.usuario.nome), e.online ? S.selo("Online — recebendo corridas", "ok") : S.selo("Offline", "")),
       h("button", { class: "btn " + (e.online ? "btn-linha" : "btn-verde"), onclick: async () => { X.dados = await S.acao(() => S.api("/api/entregador/online", { corpo: { online: !e.online } })); carregar(); } }, e.online ? "Ficar offline" : "Ficar online")),
-      h("div", { class: "gps mudo", id: "gps-txt", style: { "margin-top": ".5rem" } }, X.gps)),
+      h("div", { class: "gps mudo", id: "gps-txt", style: { "margin-top": ".5rem" } }, X.gps),
+      h("button", { class: "btn btn-linha btn-p", style: { "margin-top": ".5rem" }, onclick: () => { X.som = true; localStorage.setItem("sobrou_som", "1"); tocarAlerta(); } }, "Ativar aviso sonoro neste aparelho")),
     h("div", { class: "kpis", style: { "margin-top": "1rem" } }, h("div", { class: "kpi verde" }, h("span", { class: "mudo" }, "Ganhos hoje"), h("b", {}, S.dinheiro(d.ganhos_hoje_centavos))),
       h("div", { class: "kpi" }, h("span", { class: "mudo" }, "Total"), h("b", {}, S.dinheiro(d.ganhos_total_centavos)))),
     corridas.length ? corridas : h("p", { class: "mudo", style: { "text-align": "center", margin: "2rem 0" } }, e.online ? "Aguardando corridas perto de você…" : "Fique online para receber corridas."),

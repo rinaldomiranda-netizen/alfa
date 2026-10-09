@@ -20,7 +20,7 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent.parent
 PORTA_ATENDIMENTO = 8081
-PORTA_SOBROU = 8082
+PORTA_SOBROU = 8095
 PREFIXO = "/sobrou"
 PREFIXO_PESQUISAS = "/pesquisas"
 PASTA_PESQUISAS = RAIZ / "modules" / "central_pesquisas"
@@ -38,10 +38,13 @@ def _ambiente(extra: dict) -> dict:
 
 PROCESSOS = {
     "atendimento": ([sys.executable, "atendimento_web/app.py", "--host", "127.0.0.1", "--porta", str(PORTA_ATENDIMENTO)], {}),
-    "sobrou": ([sys.executable, "modules/sobrouplus/web/app.py"],
-               {"PORT": str(PORTA_SOBROU), "SOBROU_HOST": "127.0.0.1", "SOBROU_ATRAS_DE_PROXY": "1",
-                "SOBROU_DADOS": os.getenv("SOBROU_DADOS", "/dados/sobrou")}),
 }
+# Na Railway o Sobrou+ (versão de TESTES, dados fictícios) roda dentro deste mesmo serviço.
+# No notebook ele NÃO é iniciado aqui: lá o Sobrou+ real já roda pelo atalho próprio (mesma porta 8095).
+if any(os.getenv(v) for v in ("RAILWAY_ENVIRONMENT_NAME", "RAILWAY_ENVIRONMENT", "RAILWAY_PROJECT_ID")) or os.getenv("PORTEIRO_INICIA_SOBROU") == "1":
+    PROCESSOS["sobrou"] = ([sys.executable, "modules/sobrouplus/web/app.py"],
+                           {"PORT": str(PORTA_SOBROU), "SOBROU_HOST": "127.0.0.1", "SOBROU_ATRAS_DE_PROXY": "1",
+                            "SOBROU_DADOS": os.getenv("SOBROU_DADOS", str(RAIZ / "modules" / "sobrouplus" / "data_railway"))})
 _vivos: dict[str, subprocess.Popen] = {}
 
 
@@ -148,5 +151,5 @@ if __name__ == "__main__":
     porta = int(os.getenv("PORT", "8080"))
     servidor = ThreadingHTTPServer(("0.0.0.0", porta), Porteiro)
     servidor.daemon_threads = True
-    print(f"[porteiro] porta {porta}: Atendimento → {PORTA_ATENDIMENTO} · Sobrou+ (/sobrou) → {PORTA_SOBROU} · Central de Pesquisas (/pesquisas)", flush=True)
+    print(f"[porteiro] porta {porta}: Atendimento -> {PORTA_ATENDIMENTO} | Sobrou+ (/sobrou) -> {PORTA_SOBROU} | Central de Pesquisas (/pesquisas)", flush=True)
     servidor.serve_forever()

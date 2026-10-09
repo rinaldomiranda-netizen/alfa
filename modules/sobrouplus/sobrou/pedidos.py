@@ -5,6 +5,7 @@ import secrets
 from datetime import timedelta
 
 from .nucleo import (Ator, ErroNegocio, NaoEncontrado, SemPermissao, distancia_km, inteiro, iso, novo_id, real, texto)
+from . import seguranca
 from .ofertas import disponivel
 
 ESTADOS = {
@@ -115,9 +116,25 @@ class PedidosMixin:
     def criar_pedido(self, ator: Ator, dados: dict) -> dict:
         """Passos 3–8 do checkout: revalida estoque DENTRO da transação e reserva (nunca vende acima do estoque real)."""
         minutos = self.config_plataforma()["minutos_reserva"]
-        self._montar(ator, dados, None)  # confere tudo e já calcula a rota fora da transação (internet)
+        pre = self._montar(ator, dados, None)  # confere tudo e já calcula a rota fora da transação (internet)
+        if not self.recurso_habilitado(pre["empresa_id"], "pedidos"):
+            raise ErroNegocio("Esta empresa não está recebendo pedidos pelo Sobrou+.")
+        if not self.recurso_habilitado(pre["empresa_id"], "pagamentos"):
+            raise ErroNegocio("O checkout não está disponível para esta empresa neste momento.")
+        if pre["modo"] == "retirada" and not self.recurso_habilitado(pre["empresa_id"], "retirada"):
+            raise ErroNegocio("A retirada no balcão está indisponível para esta empresa.")
+        if pre["modo"] == "entrega" and not self.recurso_habilitado(pre["empresa_id"], "entrega"):
+            raise ErroNegocio("A entrega está indisponível para esta empresa.")
         with self.banco.transacao() as c:
             m = self._montar(ator, dados, c)
+            if not self.recurso_habilitado(m["empresa_id"], "pedidos"):
+                raise ErroNegocio("Esta empresa não está recebendo pedidos pelo Sobrou+.")
+            if not self.recurso_habilitado(m["empresa_id"], "pagamentos"):
+                raise ErroNegocio("O checkout não está disponível para esta empresa neste momento.")
+            if m["modo"] == "retirada" and not self.recurso_habilitado(m["empresa_id"], "retirada"):
+                raise ErroNegocio("A retirada no balcão está indisponível para esta empresa.")
+            if m["modo"] == "entrega" and not self.recurso_habilitado(m["empresa_id"], "entrega"):
+                raise ErroNegocio("A entrega está indisponível para esta empresa.")
             pid, numero = novo_id(), self._proximo_numero(c)
             pin = f"{secrets.randbelow(10000):04d}"
             agora = self.agora()
@@ -148,31 +165,16 @@ class PedidosMixin:
         self.auditar(ator, "pedido.criar", pid, {"total": m["total_centavos"]}, empresa_id=m["empresa_id"])
         return self.obter_pedido(ator, pid)
 
-    # ================================================================ PAGAMENTO (MODO TESTE)
-    def pagar(self, ator: Ator, pedido_id: str, meio: str = "teste", base_url: str | None = None) -> dict:
-        """Modo TESTE (aprova sem cobrar) ou real pelo Mercado Pago (Pix/cartão), quando ativado em Integrações."""
-        if meio in ("pix", "cartao"):
-            pag = self.iniciar_pagamento_real(ator, pedido_id, meio, base_url)
-            return {**self.obter_pedido(ator, pedido_id), "pagamento_iniciado": pag}
-        if meio != "teste":
-            raise ErroNegocio("Meio de pagamento inválido.")
-        if not self.pagamento_teste_permitido():
-            raise ErroNegocio("O pagamento de teste está desligado: use Pix ou cartão.")
-        with self.banco.transacao() as c:
-            p = self._uma(c, "SELECT * FROM pedidos WHERE id=?", (pedido_id,))
-            if not p or p["cliente_id"] != ator.usuario_id:
-                raise NaoEncontrado("Pedido não encontrado.")
-            if p["status"] != "aguardando_pagamento":
-                raise ErroNegocio("Este pedido não está aguardando pagamento.")
-            if p["reserva_expira_em"] and p["reserva_expira_em"] <= self.agora():
-                raise ErroNegocio("O tempo da reserva acabou. Faça o pedido de novo.")
-            agora = self.agora()
-            c.execute("""INSERT INTO pagamentos(id, pedido_id, empresa_id, meio, valor_centavos, status, referencia_externa, criado_em, atualizado_em)
-                         VALUES (?,?,?,?,?,'aprovado',?,?,?)""",
-                      (novo_id(), pedido_id, p["empresa_id"], "teste", p["total_centavos"], "TESTE-" + secrets.token_hex(4), agora, agora))
-            self._efetivar_pagamento(c, p, ator, "pagamento de teste aprovado")
-        self.auditar(ator, "pagamento.teste", pedido_id, {"valor": p["total_centavos"]}, empresa_id=p["empresa_id"])
-        return self.obter_pedido(ator, pedido_id)
+    # ================================================================ PAGAMENTO ONLINE
+    def pagar(self, ator: Ator, pedido_id: str, meio: str = "", base_url: str | None = None) -> dict:
+        """Cria somente uma cobrança pelo checkout real do gateway configurado."""
+        if meio != "checkout":
+            raise ErroNegocio("Meio de pagamento inválido. Escolha o checkout online.")
+        p = self.banco.um("SELECT empresa_id FROM pedidos WHERE id=?", (pedido_id,))
+        if p and not self.recurso_habilitado(p["empresa_id"], "pagamentos"):
+            raise ErroNegocio("O pagamento online está desativado para esta empresa.")
+        pag = self.iniciar_pagamento_real(ator, pedido_id, meio, base_url)
+        return {**self.obter_pedido(ator, pedido_id), "pagamento_iniciado": pag}
 
     def _efetivar_pagamento(self, c, p: dict, ator, nota: str) -> None:
         """Pagamento aprovado: reserva vira venda no estoque, pedido vai para 'pago' e a loja é avisada."""
@@ -194,7 +196,13 @@ class PedidosMixin:
         c.execute("UPDATE pedidos SET status=?, atualizado_em=?, concluido_em=COALESCE(?, concluido_em) WHERE id=?",
                   (novo, self.agora(), concluido, p["id"]))
         self._historico(c, p["id"], p["status"], novo, ator, nota)
-        if novo in ("pronto", "aguardando_retirada", "entregador_designado", "em_rota", "entregue", "cancelado", "expirado", "nao_retirado"):
+        if novo == "concluido":
+            # Um ponto por real gasto; gravado na mesma transação e único por pedido.
+            pontos = int(p["subtotal_centavos"]) // 100
+            if pontos:
+                c.execute("INSERT OR IGNORE INTO pontos_fidelidade(pedido_id, cliente_id, pontos, criada_em) VALUES (?,?,?,?)",
+                          (p["id"], p["cliente_id"], pontos, self.agora()))
+        if novo in ("pronto", "aguardando_retirada", "aguardando_entregador", "entregador_designado", "em_rota", "entregue", "cancelado", "expirado", "nao_retirado"):
             self.avisar(f"Pedido #{p['numero']}: {ESTADOS[novo]}.", usuario_id=p["cliente_id"], link=f"/#pedido/{p['id']}", conn=c)
         p = {**p, "status": novo}
         return p
@@ -228,6 +236,9 @@ class PedidosMixin:
         ator.exigir("retirada", "validar")
         eid = ator.empresa_alvo(empresa_id)
         cod = (codigo or "").strip()
+        chave = "retirada:" + str(eid)
+        if seguranca.FALHAS_RETIRADA.bloqueado(chave):
+            raise ErroNegocio("Muitos códigos errados seguidos. Aguarde alguns minutos e confira o código com o cliente.")
         with self.banco.transacao() as c:
             if "-" in cod and cod.split("-")[0].isdigit():
                 numero, pin = cod.split("-", 1)
@@ -235,6 +246,7 @@ class PedidosMixin:
             else:
                 p = self._uma(c, "SELECT * FROM pedidos WHERE token_retirada=? AND empresa_id=?", (cod, eid))
             if not p:
+                seguranca.FALHAS_RETIRADA.falhou(chave)
                 raise NaoEncontrado("Código não confere com nenhum pedido desta empresa.")
             if p["status"] in ("retirado", "concluido"):
                 raise ErroNegocio(f"O pedido #{p['numero']} JÁ FOI RETIRADO. Não entregue de novo.")
@@ -276,12 +288,15 @@ class PedidosMixin:
                 motivo = texto(motivo, 200, True, "o motivo do cancelamento")
             self._devolver_estoque(c, p, ator, "cancelamento")
             reais = [dict(g) for g in c.execute("SELECT id FROM pagamentos WHERE pedido_id=? AND status='aprovado' AND meio<>'teste'", (p["id"],)).fetchall()]
+            pendentes_gateway = [dict(g) for g in c.execute("SELECT id FROM pagamentos WHERE pedido_id=? AND status IN ('pendente','em_analise') AND externo_id IS NOT NULL", (p["id"],)).fetchall()]
             self._estornar(c, p)
             c.execute("UPDATE entregas SET status='falhou', atualizada_em=? WHERE pedido_id=? AND status NOT IN ('entregue','falhou')",
                       (self.agora(), pedido_id))
             self._mudar(c, p, "cancelado", ator, motivo or "cancelado pelo cliente")
         for g in reais:
             self.estornar_externo(g["id"])
+        for g in pendentes_gateway:
+            self.cancelar_externo(g["id"])
         self.auditar(ator, "pedido.cancelar", pedido_id, {"motivo": motivo}, empresa_id=p["empresa_id"])
         return self.obter_pedido(ator, pedido_id)
 
@@ -299,10 +314,10 @@ class PedidosMixin:
     def _estornar(self, c, p):
         """Pagamento de teste: marca estornado na hora. Real: estornar_externo() pede o estorno ao Mercado Pago."""
         c.execute("UPDATE pagamentos SET status='estornado', atualizado_em=? WHERE pedido_id=? AND status='aprovado' AND meio='teste'", (self.agora(), p["id"]))
-        c.execute("UPDATE pagamentos SET status='cancelado', atualizado_em=? WHERE pedido_id=? AND status='pendente'", (self.agora(), p["id"]))
+        c.execute("UPDATE pagamentos SET status='cancelado', atualizado_em=? WHERE pedido_id=? AND status IN ('pendente','em_analise')", (self.agora(), p["id"]))
 
     # ================================================================ CONSULTAS
-    def _pedido_completo(self, p: dict, ver_cliente: bool) -> dict:
+    def _pedido_completo(self, p: dict, ver_cliente: bool, incluir_avaliacao_cliente: bool = False) -> dict:
         p = dict(p)
         p["status_nome"] = ESTADOS.get(p["status"])
         p["itens"] = self.banco.todos("SELECT * FROM pedido_itens WHERE pedido_id=?", (p["id"],))
@@ -324,6 +339,8 @@ class PedidosMixin:
             p["cliente"] = cli.get("nome")
             p["cliente_telefone"] = cli.get("telefone")
         p["avaliacao"] = self.banco.um("SELECT nota, comentario, resposta FROM avaliacoes WHERE pedido_id=?", (p["id"],))
+        if incluir_avaliacao_cliente:
+            p["avaliacao_cliente"] = self.banco.um("SELECT nota, comentario FROM avaliacoes_clientes WHERE pedido_id=?", (p["id"],))
         return p
 
     def obter_pedido(self, ator: Ator, pedido_id: str) -> dict:
@@ -341,7 +358,7 @@ class PedidosMixin:
                 raise NaoEncontrado("Pedido não encontrado.")
             return self._pedido_completo(p, False)
         ator.exigir("pedidos", "ver")
-        return self._pedido_completo(ator.conferir_empresa(p, "Pedido"), False)
+        return self._pedido_completo(ator.conferir_empresa(p, "Pedido"), False, True)
 
     def listar_pedidos(self, ator: Ator, empresa_id: str | None = None, status: str | None = None, limite: int = 200) -> list[dict]:
         cond, par = [], []

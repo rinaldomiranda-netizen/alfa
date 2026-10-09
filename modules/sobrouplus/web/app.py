@@ -11,6 +11,7 @@ import json
 import mimetypes
 import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -24,7 +25,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
-from sobrou import seguranca  # noqa: E402
+from sobrou import seguranca, manutencao  # noqa: E402
 from sobrou.nucleo import ErroNegocio, NaoAutenticado  # noqa: E402
 from sobrou.plataforma import Plataforma  # noqa: E402
 
@@ -34,11 +35,23 @@ LIMITE_CORPO = 6 * 1024 * 1024
 ATRAS_DE_PROXY = os.getenv("SOBROU_ATRAS_DE_PROXY") == "1"
 PAGINAS = {"/": "app.html", "/painel": "painel.html", "/rmd": "painel.html", "/entregador": "entregador.html", "/acesso": "acesso.html",
            "/termos": "termos.html", "/privacidade": "privacidade.html"}
+# Um aplicativo instalável por perfil, cada um no SEU endereço (/apps/<nome>/), com nome, ícone e sessão próprios:
+# instalar um no celular nunca troca o nome/ícone do outro, e entrar num não tira a pessoa do outro.
+APPS = {
+    "central": ("painel.html", "Sobrou+ Central", "Sobrou+ Central — equipe Sobrou+"),
+    "loja": ("painel.html", "Sobrou+ Loja", "Sobrou+ Loja — administração da loja"),
+    "caixa": ("painel.html", "Sobrou+ Caixa", "Sobrou+ Caixa — balcão da loja"),
+    "entregador": ("entregador.html", "Sobrou+ Entrega", "Sobrou+ Entregador"),
+    "cliente": ("app.html", "Sobrou+ Cliente", "Sobrou+ Cliente — ofertas e pedidos"),
+}
 
 _plataforma: Plataforma | None = None
 _lock = threading.Lock()
 limite_login = seguranca.LimiteChamadas(20)
+limite_login_conta = seguranca.LimiteChamadas(12)
 limite_cadastro = seguranca.LimiteChamadas(10)
+limite_mutacoes = seguranca.LimiteChamadas(180)
+limite_publico = seguranca.LimiteChamadas(60)  # telemetria, webhooks e demais rotas públicas
 
 
 def plataforma() -> Plataforma:
@@ -51,6 +64,7 @@ def plataforma() -> Plataforma:
 
 ROTAS: list[tuple[str, re.Pattern, object, bool]] = []
 limite_senha = seguranca.LimiteChamadas(8)
+limite_2fa = seguranca.LimiteChamadas(8)
 
 
 class Arquivo:
@@ -66,6 +80,40 @@ def rota(metodo: str, padrao: str, publica: bool = False):
         ROTAS.append((metodo, regex, f, publica))
         return f
     return dec
+
+
+def _recurso_rota(caminho: str) -> str | None:
+    if caminho.startswith("/api/pedidos/"):
+        if "/pagar" in caminho or "/pagamento" in caminho:
+            return "pagamentos"
+        if "/avaliar" in caminho:
+            return "avaliacoes"
+        return "pedidos"
+    if caminho == "/api/pedidos":
+        return "pedidos"
+    if caminho.startswith("/api/pagamentos"):
+        return "pagamentos"
+    if caminho.startswith(("/api/avaliacoes", "/api/lojas/")):
+        return "avaliacoes"
+    if caminho.startswith(("/api/unidades",)):
+        return "unidades"
+    if caminho.startswith("/api/ofertas/") and "/estoque" in caminho:
+        return "estoque"
+    if caminho.startswith(("/api/ofertas", "/api/fotos")):
+        return "ofertas"
+    if caminho.startswith(("/api/dispatch", "/api/entregador")):
+        return "entrega"
+    if caminho.startswith(("/api/retirada",)):
+        return "retirada"
+    if caminho.startswith(("/api/graficos", "/api/relatorios")):
+        return "relatorios"
+    if caminho.startswith(("/api/financeiro", "/api/repasses", "/api/conciliacao")):
+        return "financeiro"
+    if caminho.startswith(("/api/doacoes", "/api/instituicoes")):
+        return "doacoes"
+    if caminho.startswith("/api/usuarios"):
+        return "usuarios"
+    return None
 
 
 # ====================================================================== ROTAS PÚBLICAS
@@ -91,7 +139,7 @@ def r_saude(h, p, a, q, c):
 def r_config(h, p, a, q, c):
     cfg = p.config_plataforma()
     return {"tema": cfg["tema"], "nome": cfg["nome_exibicao"], "slogan": "Boa comida. Mais valor. Menos desperdício.",
-            "logo": (ESTATICO / "img" / "logo.png").exists()}
+            "logo": (ESTATICO / "img" / "logo.png").exists(), "url_acesso": h.url_acesso()}
 
 
 @rota("GET", "/api/vitrine", True)
@@ -112,9 +160,10 @@ def r_impacto_publico(h, p, a, q, c):
 
 @rota("POST", "/api/entrar", True)
 def r_entrar(h, p, a, q, c):
-    if not limite_login.permitir(h.ip()):
+    chave_conta = h.ip() + ":" + str(c.get("email") or "").strip().lower()[:160]
+    if not limite_login.permitir(h.ip()) or not limite_login_conta.permitir(chave_conta):
         raise ErroNegocio("Muitas tentativas. Aguarde um minuto.")
-    s = p.entrar(c.get("email"), c.get("senha"), h.ip())
+    s = p.entrar(c.get("email"), c.get("senha"), h.ip(), c.get("codigo"))
     h.cookie_novo = s["token"]
     return {"usuario": s["usuario"]}
 
@@ -196,6 +245,8 @@ def r_push_chave(h, p, a, q, c):
 
 @rota("GET", "/api/lojas/{eid}/avaliacoes", True)
 def r_aval_publicas(h, p, a, q, c, eid):
+    if not p.recurso_habilitado(eid, "avaliacoes"):
+        return {"itens": [], "nota": None}
     return {"itens": p.publico_avaliacoes(eid), "nota": p.notas_empresas().get(eid)}
 
 
@@ -225,6 +276,21 @@ def r_avaliar(h, p, a, q, c, pid):
 @rota("GET", "/api/avaliacoes")
 def r_avaliacoes(h, p, a, q, c):
     return p.listar_avaliacoes(a, q.get("empresa_id"))
+
+
+@rota("POST", "/api/pedidos/{pid}/avaliar-cliente")
+def r_avaliar_cliente(h, p, a, q, c, pid):
+    return p.avaliar_cliente_pedido(a, pid, c.get("nota"), c.get("comentario"))
+
+
+@rota("GET", "/api/avaliacoes-clientes")
+def r_avaliacoes_clientes(h, p, a, q, c):
+    return p.listar_avaliacoes_clientes(a, q.get("empresa_id"))
+
+
+@rota("GET", "/api/minha-reputacao")
+def r_minha_reputacao(h, p, a, q, c):
+    return p.minha_reputacao(a)
 
 
 @rota("POST", "/api/avaliacoes/{aid}/responder")
@@ -312,6 +378,61 @@ def r_novo_convite(h, p, a, q, c, uid):
     return p.novo_convite(a, uid)
 
 
+def _dados_envio_convite(h, p, a, c, uid):
+    a.exigir("usuarios", "editar")
+    u = a.conferir_empresa(p.banco.um("SELECT * FROM usuarios WHERE id=?", (uid,)), "Usuário")
+    token = str(c.get("token") or "").strip()
+    if not token:
+        raise ErroNegocio("Link de acesso ausente. Gere um novo link antes de enviar.")
+    _convite, convidado = p._convite_valido(token)
+    if convidado["id"] != uid:
+        raise NaoAutenticado("Link de acesso inválido.")
+    # Nunca reutilizar uma URL antiga enviada pelo navegador. O servidor é a fonte da URL atual.
+    base = (h.url_acesso() or "").rstrip("/")
+    if not base:
+        raise ErroNegocio("Não foi possível determinar o endereço de acesso do Sobrou+.")
+    caminho = f"/acesso?c={token}"
+    link = base + caminho
+    empresa = p.banco.um("SELECT nome FROM empresas WHERE id=?", (u["empresa_id"],)) if u.get("empresa_id") else None
+    nome_empresa = f" ({empresa['nome']})" if empresa else ""
+    papel_nome = __import__("sobrou.nucleo", fromlist=["PAPEIS"]).PAPEIS.get(u["papel"], "usuário")
+    # O convite enviado pelo WhatsApp/e-mail deve conter somente o endereço clicável.
+    # A tela do painel já mostra as instruções separadamente para o operador.
+    mensagem = link
+    return u, mensagem, link
+
+
+@rota("POST", "/api/usuarios/{uid}/convite/whatsapp")
+def r_enviar_convite_whatsapp(h, p, a, q, c, uid):
+    u, mensagem, link = _dados_envio_convite(h, p, a, c, uid)
+    from sobrou.integracoes import telefone_whatsapp
+    from sobrou.rede import ErroRede
+    cfg = p._wa()
+    tel = telefone_whatsapp(u.get("telefone"))
+    if not cfg:
+        raise ErroNegocio("WhatsApp oficial não está configurado. O sistema vai abrir o WhatsApp Web com a mensagem pronta.")
+    if not tel:
+        raise ErroNegocio("Este usuário não tem celular com DDD cadastrado.")
+    try:
+        p._enviar_whatsapp(cfg, tel, mensagem)
+    except ErroRede as e:
+        detalhe = e.corpo.get("message") if isinstance(e.corpo, dict) else None
+        raise ErroNegocio("O WhatsApp oficial não conseguiu enviar a mensagem." + (f" {detalhe}" if detalhe else "")) from e
+    p.auditar(a, "usuario.convite_whatsapp", uid, empresa_id=u.get("empresa_id"))
+    return {"ok": True, "mensagem": f"Link de acesso enviado por WhatsApp para {tel}.", "link": link}
+
+
+@rota("POST", "/api/usuarios/{uid}/convite/email")
+def r_enviar_convite_email(h, p, a, q, c, uid):
+    u, mensagem, link = _dados_envio_convite(h, p, a, c, uid)
+    if not p._email_cfg():
+        raise ErroNegocio("SMTP de e-mail do Sobrou+ não está configurado. O sistema vai abrir seu aplicativo de e-mail com a mensagem pronta.")
+    if not p.enviar_email(u["email"], "Seu acesso ao Sobrou+", mensagem):
+        raise ErroNegocio("Não foi possível enviar o e-mail pelo SMTP configurado. Veja os erros em Sistema.")
+    p.auditar(a, "usuario.convite_email", uid, empresa_id=u.get("empresa_id"))
+    return {"ok": True, "mensagem": f"Link de acesso enviado para {u['email']}.", "link": link}
+
+
 @rota("POST", "/api/seguranca/2fa/iniciar")
 def r_2fa_iniciar(h, p, a, q, c):
     return p.iniciar_2fa(a)
@@ -319,6 +440,8 @@ def r_2fa_iniciar(h, p, a, q, c):
 
 @rota("POST", "/api/seguranca/2fa/confirmar")
 def r_2fa_confirmar(h, p, a, q, c):
+    if not limite_2fa.permitir(a.usuario_id + ":" + h.ip()):
+        raise ErroNegocio("Muitas tentativas de confirmação. Aguarde um minuto.")
     return p.confirmar_2fa(a, c.get("codigo"))
 
 
@@ -342,6 +465,26 @@ def r_criador_testar(h, p, a, q, c):
     return {"caminho": "/entrar?token=" + p.abrir_teste(a, c.get("perfil"))}
 
 
+@rota("GET", "/api/rmd/testadores")
+def r_testadores(h, p, a, q, c):
+    return {**p.listar_testadores(a), "url_acesso": (h.url_acesso() or "").rstrip("/")}
+
+
+@rota("POST", "/api/rmd/testadores")
+def r_criar_testador(h, p, a, q, c):
+    return {**p.criar_testador(a, c), "url_acesso": (h.url_acesso() or "").rstrip("/")}
+
+
+@rota("POST", "/api/rmd/testadores/{tid}/links")
+def r_links_testador(h, p, a, q, c, tid):
+    return {**p.novos_links_testador(a, tid), "url_acesso": (h.url_acesso() or "").rstrip("/")}
+
+
+@rota("POST", "/api/rmd/testadores/{tid}/ligar")
+def r_ligar_testador(h, p, a, q, c, tid):
+    return p.ligar_testador(a, tid, bool(c.get("ligado")))
+
+
 @rota("POST", "/api/criador/voltar", True)
 def r_criador_voltar(h, p, a, q, c):
     ck = SimpleCookie(h.headers.get("Cookie") or "")
@@ -361,7 +504,10 @@ def r_fin_detalhado(h, p, a, q, c):
 
 @rota("POST", "/api/senha")
 def r_senha(h, p, a, q, c):
-    return p.trocar_senha(a, c.get("atual"), c.get("nova"))
+    resultado = p.trocar_senha(a, c.get("atual"), c.get("nova"))
+    # Revoga todas as outras sessões; a sessão atual permanece ativa.
+    p.sair_de_todos(a, h.token() or "")
+    return resultado
 
 
 @rota("GET", "/api/avisos")
@@ -399,7 +545,7 @@ def r_pedido(h, p, a, q, c, pid):
 
 @rota("POST", "/api/pedidos/{pid}/pagar")
 def r_pagar(h, p, a, q, c, pid):
-    return p.pagar(a, pid, c.get("meio", "teste"), h.base_url())
+    return p.pagar(a, pid, c.get("meio", ""), h.base_url())
 
 
 @rota("GET", "/api/pedidos/{pid}/pagamento")
@@ -412,10 +558,38 @@ def r_meios(h, p, a, q, c):
     return p.meios_pagamento()
 
 
+@rota("GET", "/api/pagamentos")
+def r_pagamentos(h, p, a, q, c):
+    return {"itens": p.listar_pagamentos(a, q.get("empresa_id"))}
+
+
+@rota("POST", "/api/pagamentos/{pid}/cancelar")
+def r_cancelar_pagamento(h, p, a, q, c, pid):
+    return p.cancelar_pagamento(a, pid)
+
+
+@rota("POST", "/api/pagamentos/{pid}/estornar")
+def r_estornar_pagamento(h, p, a, q, c, pid):
+    return p.estornar_pagamento(a, pid)
+
+
 @rota("POST", "/api/webhooks/mercadopago", True)
 def r_webhook_mp(h, p, a, q, c):
     cab = {k.lower(): v for k, v in h.headers.items()}
-    return p.webhook_mercadopago(q, c, cab)
+    resultado = p.webhook_mercadopago(q, c, cab)
+    if not resultado.get("ok"):
+        raise NaoAutenticado("Webhook rejeitado ou não confirmado pelo gateway.")
+    return resultado
+
+
+@rota("POST", "/api/telemetria", True)
+def r_telemetria(h, p, a, q, c):
+    return p.registrar_evento_uso(c)
+
+
+@rota("GET", "/api/marketing")
+def r_marketing(h, p, a, q, c):
+    return p.relatorio_marketing(a, q.get("empresa_id"), q.get("dias", 30))
 
 
 @rota("GET", "/api/mapa/rota")
@@ -571,6 +745,11 @@ def r_dispatch(h, p, a, q, c):
     return p.painel_dispatch(a, q.get("empresa_id"))
 
 
+@rota("POST", "/api/dispatch/{enid}/buscar")
+def r_buscar_entregador(h, p, a, q, c, enid):
+    return p.buscar_entregador_novamente(a, enid)
+
+
 @rota("POST", "/api/dispatch/{enid}/designar")
 def r_designar(h, p, a, q, c, enid):
     return p.designar_manual(a, enid, c.get("entregador_id"))
@@ -594,6 +773,11 @@ def r_posicao(h, p, a, q, c):
 @rota("POST", "/api/entregador/corridas/{enid}/responder")
 def r_responder(h, p, a, q, c, enid):
     return p.responder_corrida(a, enid, bool(c.get("aceitar")))
+
+
+@rota("POST", "/api/entregador/corridas/{enid}/problema")
+def r_problema_entrega(h, p, a, q, c, enid):
+    return p.reportar_problema_entrega(a, enid, c.get("tipo"), c.get("descricao", ""))
 
 
 @rota("POST", "/api/entregador/corridas/{enid}/avancar")
@@ -710,39 +894,158 @@ def r_sistema(h, p, a, q, c):
     return p.painel_sistema(a)
 
 
+@rota("GET", "/api/seguranca/painel")
+def r_painel_seguranca(h, p, a, q, c):
+    # O método no núcleo repete a validação pelo ID do proprietário RMD.
+    return p.painel_seguranca(a)
+
+
+@rota("GET", "/api/manutencao/painel")
+def r_manutencao_painel(h, p, a, q, c):
+    if a.usuario_id != p.id_dono():
+        raise NaoAutenticado("Área exclusiva do desenvolvedor RMD.")
+    status = manutencao.rotina_inicial()
+    backups = sorted(manutencao.BACKUPS.glob("sobrou-*.db"), key=lambda x: x.stat().st_mtime, reverse=True)
+    ultimo = backups[0] if backups else None
+    return {
+        "ambiente": os.getenv("SOBROU_AMBIENTE", "producao"),
+        "dados": str(manutencao.DADOS),
+        "porta": os.getenv("SOBROU_PORTA", "8095"),
+        "producao_separada": (os.getenv("SOBROU_AMBIENTE", "producao") == "producao"),
+        "desenvolvimento_dados": str(RAIZ / "data_desenvolvimento"),
+        "backup": status.get("backup", {}),
+        "integridade": status.get("integridade", {}),
+        "retencao": status.get("retencao", {}),
+        "ultimo_backup": ultimo.name if ultimo else None,
+    }
+
+
+@rota("POST", "/api/manutencao/backup")
+def r_manutencao_backup(h, p, a, q, c):
+    if a.usuario_id != p.id_dono():
+        raise NaoAutenticado("Área exclusiva do desenvolvedor RMD.")
+    return manutencao.backup_e_teste()
+
+
+@rota("POST", "/api/manutencao/integridade")
+def r_manutencao_integridade(h, p, a, q, c):
+    if a.usuario_id != p.id_dono():
+        raise NaoAutenticado("Área exclusiva do desenvolvedor RMD.")
+    return manutencao.verificar_integridade()
+
+
+@rota("GET", "/api/recursos")
+def r_recursos(h, p, a, q, c):
+    if a.plataforma:
+        return p.recursos_plataforma(a)
+    if a.empresa_id:
+        return p.recursos_empresa(a, a.empresa_id)
+    raise ErroNegocio("Esta conta não pertence a uma empresa.")
+
+
+@rota("PUT", "/api/recursos")
+def r_salvar_recursos(h, p, a, q, c):
+    return p.salvar_recursos_plataforma(a, c)
+
+
+@rota("GET", "/api/empresas/{eid}/recursos")
+def r_recursos_empresa(h, p, a, q, c, eid):
+    return p.recursos_empresa(a, eid)
+
+
+@rota("PUT", "/api/empresas/{eid}/recursos")
+def r_salvar_recursos_empresa(h, p, a, q, c, eid):
+    return p.salvar_recursos_empresa(a, eid, c)
+
+
 # ====================================================================== SERVIDOR
 class Handler(BaseHTTPRequestHandler):
     server_version = "SobrouPlus"
     sys_version = ""
+    timeout = 30  # conexão parada/lenta é encerrada (não prende o servidor)
     cookie_novo: str | None = None
     cookie_extra: tuple | None = None
+    app: str | None = None  # aplicativo instalável em uso (/apps/<nome>/), ou None
 
     def log_message(self, fmt, *args):  # noqa: D401 - log curto
         if os.getenv("SOBROU_LOG"):
             sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
 
+    def _proxy_confiavel(self) -> bool:
+        if not ATRAS_DE_PROXY:
+            return False
+        # Railway e serviços parecidos: o proxy da hospedagem não vem de 127.0.0.1.
+        return self.client_address[0] in ("127.0.0.1", "::1") or os.getenv("SOBROU_PROXY_HOSPEDAGEM") == "1"
+
     def ip(self) -> str:
-        if ATRAS_DE_PROXY:
-            encaminhado = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        if self._proxy_confiavel():
+            # O ÚLTIMO endereço é o que o próprio túnel/proxy anotou; os anteriores
+            # podem ter sido escritos por quem está acessando (e burlar o limite de tentativas).
+            encaminhado = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
             if encaminhado:
                 return encaminhado[:64]
         return self.client_address[0]
 
     def https(self) -> bool:
-        return os.getenv("SOBROU_HTTPS") == "1" or (ATRAS_DE_PROXY and self.headers.get("X-Forwarded-Proto") == "https")
+        return self._proxy_confiavel() and self.headers.get("X-Forwarded-Proto") == "https"
 
     def base_url(self) -> str:
-        host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(",")[0].strip()
+        encaminhado = self.headers.get("X-Forwarded-Host") if self._proxy_confiavel() else None
+        host = (encaminhado or self.headers.get("Host") or "").split(",")[0].strip()
         return f"{'https' if self.https() else 'http'}://{host}{self.prefixo()}" if host else ""
+
+    def url_acesso(self) -> str:
+        """URL que outra pessoa consegue abrir; em modo local troca loopback pelo IP da rede."""
+        configurada = (os.getenv("SOBROU_URL_PUBLICA") or "").strip().rstrip("/")
+        if configurada:
+            return configurada
+        base = self.base_url()
+        if not base:
+            return ""
+        if self._proxy_confiavel():
+            return base
+        host = (self.headers.get("Host") or "").split(",")[0].strip()
+        host_sem_porta = host
+        porta = ""
+        if host.startswith("["):
+            fim = host.find("]")
+            host_sem_porta = host[1:fim] if fim > 0 else host
+            if fim > 0 and len(host) > fim + 1 and host[fim + 1] == ":":
+                porta = host[fim + 2:]
+        elif ":" in host:
+            host_sem_porta, porta = host.rsplit(":", 1)
+        if host_sem_porta in ("127.0.0.1", "localhost", "::1"):
+            ip = None
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("10.255.255.255", 1))
+                ip = s.getsockname()[0]
+            except OSError:
+                pass
+            finally:
+                s.close()
+            if ip:
+                scheme = "https" if self.https() else "http"
+                suffixo = f":{porta}" if porta else ""
+                return f"{scheme}://{ip}{suffixo}{self.prefixo()}"
+        return base
 
     def prefixo(self) -> str:
         """Caminho na frente quando o Sobrou+ é servido dentro de outro endereço (ex.: /sobrou)."""
-        pre = (self.headers.get("X-Forwarded-Prefix") or "").rstrip("/") if ATRAS_DE_PROXY else ""
+        pre = (self.headers.get("X-Forwarded-Prefix") or "").rstrip("/") if self._proxy_confiavel() else ""
         return pre if re.fullmatch(r"(/[a-z0-9-]+)?", pre) else ""
 
+    def prefixo_app(self) -> str:
+        """Prefixo + aplicativo (ex.: /sobrou/apps/caixa): para onde o usuário volta sem sair do app instalado."""
+        return self.prefixo() + (f"/apps/{self.app}" if self.app else "")
+
     def caminho_cookie(self) -> str:
-        """O cookie de sessão só vale dentro do Sobrou+ (não vaza para outro sistema servido no mesmo endereço)."""
-        return self.prefixo() or "/"
+        """O cookie de sessão só vale dentro do Sobrou+ (não vaza para outro sistema servido no mesmo endereço).
+        Em cada aplicativo instalado vale só dentro dele: Caixa e Loja no mesmo celular ficam com sessões separadas."""
+        return self.prefixo_app() or "/"
+
+    def nome_cookie(self) -> str:
+        return COOKIE + (f"_{self.app}" if self.app else "")
 
     def token(self) -> str | None:
         auth = self.headers.get("Authorization") or ""
@@ -751,7 +1054,7 @@ class Handler(BaseHTTPRequestHandler):
         # o navegador manda primeiro o cookie do caminho mais específico (/sobrou): vale o primeiro
         for parte in (self.headers.get("Cookie") or "").split(";"):
             nome, _, valor = parte.strip().partition("=")
-            if nome == COOKIE and valor:
+            if nome == self.nome_cookie() and valor:
                 return valor
         return None
 
@@ -761,7 +1064,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")  # o mapa (OpenStreetMap) exige saber o site; só vai o endereço, nunca a página
         self.send_header("Permissions-Policy", "geolocation=(self), camera=(self)")
         if self.https():
-            self.send_header("Strict-Transport-Security", "max-age=31536000")
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         self.send_header("Content-Security-Policy",
                          "default-src 'self'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org; style-src 'self' 'unsafe-inline'; script-src 'self'; "
                          "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
@@ -775,15 +1078,15 @@ class Handler(BaseHTTPRequestHandler):
         if self.cookie_novo is not None:
             seguro = "; Secure" if self.https() else ""
             if self.cookie_novo:
-                self.send_header("Set-Cookie", f"{COOKIE}={self.cookie_novo}; Path={self.caminho_cookie()}; HttpOnly; SameSite=Lax; Max-Age={12 * 3600}{seguro}")
+                self.send_header("Set-Cookie", f"{self.nome_cookie()}={self.cookie_novo}; Path={self.caminho_cookie()}; HttpOnly; SameSite=Lax; Max-Age={seguranca.DURACAO_SESSAO_HORAS * 3600}{seguro}")
             else:
-                self.send_header("Set-Cookie", f"{COOKIE}=; Path={self.caminho_cookie()}; HttpOnly; SameSite=Lax; Max-Age=0{seguro}")
-                if self.caminho_cookie() != "/":  # apaga também o cookie antigo (versões anteriores usavam Path=/)
+                self.send_header("Set-Cookie", f"{self.nome_cookie()}=; Path={self.caminho_cookie()}; HttpOnly; SameSite=Lax; Max-Age=0{seguro}")
+                if self.caminho_cookie() != "/" and not self.app:  # apaga também o cookie antigo (versões anteriores usavam Path=/)
                     self.send_header("Set-Cookie", f"{COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{seguro}")
         if self.cookie_extra is not None:
             seguro = "; Secure" if self.https() else ""
             nome, valor = self.cookie_extra
-            idade = 12 * 3600 if valor else 0
+            idade = seguranca.DURACAO_SESSAO_HORAS * 3600 if valor else 0
             self.send_header("Set-Cookie", f"{nome}={valor}; Path={self.caminho_cookie()}; HttpOnly; SameSite=Lax; Max-Age={idade}{seguro}")
         self._seguranca()
         self.end_headers()
@@ -798,6 +1101,44 @@ class Handler(BaseHTTPRequestHandler):
         self._seguranca()
         self.end_headers()
         self.wfile.write(dados)
+
+    def _enviar_bytes(self, dados: bytes, tipo: str):
+        self.send_response(200)
+        self.send_header("Content-Type", tipo)
+        self.send_header("Content-Length", str(len(dados)))
+        self.send_header("Cache-Control", "no-cache")
+        self._seguranca()
+        self.end_headers()
+        self.wfile.write(dados)
+
+    def _pagina_app(self, pagina: str):
+        """A mesma tela, com o nome e o ícone do aplicativo (o iPhone usa estes dados ao adicionar à Tela de Início)."""
+        _pag, curto, titulo = APPS[self.app]
+        html = (ESTATICO / pagina).read_text(encoding="utf-8")
+        html = re.sub(r"<title>.*?</title>", f"<title>{titulo}</title>", html, count=1, flags=re.S)
+        html = html.replace('href="static/img/icone-192.png"', f'href="static/img/apps/{self.app}-180.png"')
+        html = html.replace('href="static/img/favicon.png"', f'href="static/img/apps/{self.app}-192.png"')
+        html = html.replace("</head>", f'<meta name="apple-mobile-web-app-title" content="{curto}">\n'
+                                       f'<meta name="application-name" content="{curto}">\n'
+                                       '<meta name="apple-mobile-web-app-capable" content="yes">\n'
+                                       '<meta name="mobile-web-app-capable" content="yes">\n</head>', 1)
+        return self._enviar_bytes(html.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _manifesto_app(self):
+        _pag, curto, titulo = APPS[self.app]
+        base = json.loads((ESTATICO / "manifest.webmanifest").read_text(encoding="utf-8"))
+        icones = f"static/img/apps/{self.app}"
+        m = {
+            # id próprio = aplicativo próprio no celular (não substitui o outro na instalação)
+            "id": f"{self.prefixo()}/apps/{self.app}/", "name": titulo, "short_name": curto,
+            "description": base.get("description"), "start_url": "./", "scope": "./", "display": "standalone",
+            "orientation": "portrait", "background_color": base.get("background_color"), "theme_color": base.get("theme_color"),
+            "lang": "pt-BR",
+            "icons": [{"src": f"{icones}-192.png", "sizes": "192x192", "type": "image/png"},
+                      {"src": f"{icones}-512.png", "sizes": "512x512", "type": "image/png"},
+                      {"src": f"{icones}-512-mascara.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}],
+        }
+        return self._enviar_bytes(json.dumps(m, ensure_ascii=False, indent=1).encode("utf-8"), "application/manifest+json")
 
     def _baixar(self, arq: "Arquivo"):
         self.send_response(200)
@@ -818,6 +1159,30 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(corpo)
 
+    def _origem_segura(self) -> bool:
+        """Impede requisições de outro site quando a sessão vem do cookie."""
+        if self.headers.get("Authorization"):
+            return True
+        if not self.headers.get("Cookie"):
+            return True
+        origem = (self.headers.get("Origin") or "").strip()
+        if not origem:
+            referer = (self.headers.get("Referer") or "").strip()
+            if referer:
+                origem = referer
+        if not origem:
+            # Clientes nativos podem não enviar Origin/Referer; JSON-only já
+            # impede formulários cross-site simples.
+            return True
+        try:
+            u = urlparse(origem)
+            host = (self.headers.get("X-Forwarded-Host") if self._proxy_confiavel() else None) or self.headers.get("Host") or ""
+            host = (host or "").split(",")[0].strip()
+            esquema = "https" if self.https() else "http"
+            return u.scheme == esquema and u.netloc == host
+        except ValueError:
+            return False
+
     def do_GET(self):  # noqa: N802
         self._tratar("GET")
 
@@ -830,10 +1195,34 @@ class Handler(BaseHTTPRequestHandler):
     def _tratar(self, metodo: str):
         self.cookie_novo = None
         self.cookie_extra = None
+        self.app = None
         url = urlparse(self.path)
-        caminho = url.path.rstrip("/") or "/"
+        caminho_original = url.path or "/"
+        m_app = re.match(r"^/apps/([a-z]+)(/.*)?$", caminho_original)
+        if m_app and m_app.group(1) in APPS:
+            self.app = m_app.group(1)
+            if not m_app.group(2):  # /apps/caixa -> /apps/caixa/ (os arquivos relativos ficam dentro do app)
+                self.send_response(302)
+                self.send_header("Location", self.prefixo_app() + "/" + (("?" + url.query) if url.query else ""))
+                self.send_header("Content-Length", "0")
+                self._seguranca()
+                self.end_headers()
+                return
+            caminho_original = m_app.group(2)
+        caminho = caminho_original.rstrip("/") or "/"
         p = plataforma()
         try:
+            # As páginas usam recursos relativos (static/...). Com barra final,
+            # o navegador procura /painel/static/... e /rmd/static/..., que não existem.
+            # Redirecionamos para a URL canônica sem barra, preservando prefixo e query.
+            if metodo == "GET" and not caminho.startswith("/api/") and caminho_original != "/" and caminho_original.endswith("/") and caminho in PAGINAS:
+                destino = self.prefixo_app() + caminho + (("?" + url.query) if url.query else "")
+                self.send_response(302)
+                self.send_header("Location", destino)
+                self.send_header("Cache-Control", "no-store")
+                self._seguranca()
+                self.end_headers()
+                return None
             if metodo == "GET" and not caminho.startswith("/api/"):
                 return self._estatico(p, caminho, url)
             q = {k: v[0] for k, v in parse_qs(url.query).items()}
@@ -843,12 +1232,23 @@ class Handler(BaseHTTPRequestHandler):
                 achou = regex.match(caminho)
                 if not achou:
                     continue
+                if metodo in ("POST", "PUT"):
+                    if not self._origem_segura():
+                        return self._json(403, {"erro": "Origem da requisição não autorizada."})
+                    limite = limite_publico if publica else limite_mutacoes
+                    if not limite.permitir(self.ip() + ":" + caminho[:180]):
+                        return self._json(429, {"erro": "Muitas alterações em sequência. Aguarde um minuto."})
                 corpo = {}
                 if metodo in ("POST", "PUT"):
                     # só JSON: bloqueia formulário de outro site (CSRF) mesmo com o cookie
                     if "application/json" not in (self.headers.get("Content-Type") or ""):
                         return self._json(415, {"erro": "Envie JSON."})
-                    tam = int(self.headers.get("Content-Length") or 0)
+                    try:
+                        tam = int(self.headers.get("Content-Length") or 0)
+                    except ValueError:
+                        tam = -1
+                    if tam < 0:
+                        return self._json(400, {"erro": "Tamanho do envio inválido."})
                     if tam > LIMITE_CORPO:
                         return self._json(413, {"erro": "Envio grande demais."})
                     bruto = self.rfile.read(tam) if tam else b"{}"
@@ -861,6 +1261,24 @@ class Handler(BaseHTTPRequestHandler):
                 ator = None if publica else p.ator_da_sessao(self.token(), self.ip())
                 if ator is not None and ator.extras.get("trocar_senha") and caminho not in ("/api/eu", "/api/senha", "/api/avisos"):
                     return self._json(403, {"erro": "Troque a senha inicial antes de continuar.", "trocar_senha": True})
+                # 2FA temporariamente opcional/desativado no fluxo de entrada.
+                # A infraestrutura de TOTP permanece disponível para reativação futura,
+                # mas nenhuma tela/API exige configuração ou código para acessar o painel.
+                recurso = _recurso_rota(caminho)
+                if ator is not None and ator.papel == "cliente" and metodo == "GET" and caminho.startswith("/api/pedidos"):
+                    recurso = None  # clientes continuam acompanhando pedidos já existentes se novas vendas forem pausadas
+                if ator is not None and recurso and not ator.plataforma:
+                    empresa_recurso = ator.empresa_id
+                    if not empresa_recurso and ator.papel == "cliente":
+                        pedido_match = re.match(r"^/api/pedidos/([^/]+)", caminho)
+                        if pedido_match:
+                            pr = p.banco.um("SELECT empresa_id FROM pedidos WHERE id=?", (pedido_match.group(1),))
+                            empresa_recurso = pr["empresa_id"] if pr else None
+                    bloqueado = (empresa_recurso and not p.recurso_habilitado(empresa_recurso, recurso))
+                    if not empresa_recurso and ator.papel == "instituicao" and not p._recurso_global(recurso):
+                        bloqueado = True
+                    if bloqueado:
+                        return self._json(403, {"erro": "Este recurso está desativado para esta conta. Fale com o suporte Sobrou+.", "recurso": recurso})
                 resultado = f(self, p, ator, q, corpo, **achou.groupdict())
                 if isinstance(resultado, Arquivo):
                     return self._baixar(resultado)
@@ -890,16 +1308,16 @@ class Handler(BaseHTTPRequestHandler):
             destino = {"cliente": "/", "entregador": "/entregador"}.get(s["usuario"]["papel"], "/painel")
             seguro = "; Secure" if self.https() else ""
             self.send_response(302)
-            self.send_header("Location", self.prefixo() + destino)
+            self.send_header("Location", self.prefixo_app() + destino)
             atual = self.token()
             if atual and p.eh_conta_teste(s["usuario"]["id"]):
                 try:
                     quem = p.ator_da_sessao(atual)
                     if quem.usuario_id == p.id_dono() or quem.papel == "admin_sobrou":
-                        self.send_header("Set-Cookie", f"sob_criador={atual}; Path={self.caminho_cookie()}; HttpOnly; SameSite=Lax; Max-Age={12 * 3600}{seguro}")
+                        self.send_header("Set-Cookie", f"sob_criador={atual}; Path={self.caminho_cookie()}; HttpOnly; SameSite=Lax; Max-Age={seguranca.DURACAO_SESSAO_HORAS * 3600}{seguro}")
                 except ErroNegocio:
                     pass
-            self.send_header("Set-Cookie", f"{COOKIE}={s['token']}; Path={self.caminho_cookie()}; HttpOnly; SameSite=Lax; Max-Age={12 * 3600}{seguro}")
+            self.send_header("Set-Cookie", f"{self.nome_cookie()}={s['token']}; Path={self.caminho_cookie()}; HttpOnly; SameSite=Lax; Max-Age={seguranca.DURACAO_SESSAO_HORAS * 3600}{seguro}")
             self.send_header("Content-Length", "0")
             self.end_headers()
             return None
@@ -910,11 +1328,17 @@ class Handler(BaseHTTPRequestHandler):
             except ErroNegocio:
                 return self._erro_simples(404, "Foto não encontrada.")
             return self._arquivo(arq, tipo, "public, max-age=86400")
+        if self.app and caminho == "/":
+            return self._pagina_app(APPS[self.app][0])
         if caminho in PAGINAS:
+            if self.app:
+                return self._pagina_app(PAGINAS[caminho])
             return self._arquivo(ESTATICO / PAGINAS[caminho], "text/html; charset=utf-8")
         if caminho == "/sw.js":  # na raiz do app para valer em todas as telas
             return self._arquivo(ESTATICO / "sw.js", "text/javascript; charset=utf-8")
         if caminho == "/manifest.webmanifest":
+            if self.app:
+                return self._manifesto_app()
             return self._arquivo(ESTATICO / "manifest.webmanifest", "application/manifest+json")
         if caminho.startswith("/static/"):
             alvo = (ESTATICO / caminho[len("/static/"):]).resolve()
@@ -935,6 +1359,8 @@ def _rotina_em_segundo_plano(parar: threading.Event):
 
 
 def criar_servidor(host: str = "127.0.0.1", porta: int = 8095) -> ThreadingHTTPServer:
+    if os.getenv("SOBROU_PUBLICO") == "1" and os.getenv("SOBROU_HTTPS") != "1":
+        raise RuntimeError("Publicação externa bloqueada: configure HTTPS no proxy e defina SOBROU_HTTPS=1.")
     servidor = ThreadingHTTPServer((host, porta), Handler)
     servidor.daemon_threads = True
     parar = threading.Event()

@@ -9,9 +9,10 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 
+from . import seguranca
 from .nucleo import Ator, ErroNegocio, NaoEncontrado, SemPermissao, distancia_km, iso, ler_data, novo_id, real
 
-SEGUNDOS_PARA_ACEITAR = 90
+SEGUNDOS_PARA_ACEITAR = 60
 VELOCIDADE_KMH = 20      # moto/bike em cidade (estimativa de ETA)
 MINUTOS_COLETA = 5
 POSICAO_VALIDA_MIN = 10  # posição mais velha que isso: entregador não entra no Dispatch
@@ -28,22 +29,41 @@ class LogisticaMixin:
             raise NaoEncontrado("Cadastro de entregador não encontrado.")
         return e
 
+    def _limpar_posicao_se_sem_entrega_ativa(self, c, entregador_id: str) -> None:
+        """Apaga trilhas antigas; a posição atual só permanece enquanto houver entrega ativa ou disponibilidade."""
+        ativos = c.execute("""SELECT COUNT(*) AS n FROM entregas WHERE entregador_id=?
+                              AND status IN ('ofertada','aceita','em_coleta','coletada','em_rota')""", (entregador_id,)).fetchone()["n"]
+        c.execute("DELETE FROM posicoes WHERE entregador_id=?", (entregador_id,))
+        e = c.execute("SELECT online FROM entregadores WHERE id=?", (entregador_id,)).fetchone()
+        if e and not e["online"] and not ativos:
+            c.execute("UPDATE entregadores SET lat=NULL, lng=NULL, posicao_em=NULL WHERE id=?", (entregador_id,))
+
     def ficar_online(self, ator: Ator, online: bool) -> dict:
         e = self._entregador_do_ator(ator)
-        self.banco.executar("UPDATE entregadores SET online=? WHERE id=?", (1 if online else 0, e["id"]))
+        with self.banco.transacao() as c:
+            c.execute("UPDATE entregadores SET online=? WHERE id=?", (1 if online else 0, e["id"]))
+            if not online:
+                self._limpar_posicao_se_sem_entrega_ativa(c, e["id"])
         self.auditar(ator, "entregador.online" if online else "entregador.offline", e["id"], empresa_id=e["empresa_id"])
         if online:
             self.despachar()
         return self.painel_entregador(ator)
 
     def enviar_posicao(self, ator: Ator, lat, lng, precisao=None) -> dict:
-        """Posição real do GPS do celular (navegador pede permissão). Nada é simulado."""
+        """Mantém somente a posição atual para despacho/entrega; não grava histórico de trajetos."""
         e = self._entregador_do_ator(ator)
         la, ln = real(lat, "a latitude", -90, 90, True), real(lng, "a longitude", -180, 180, True)
+        real(precisao, "a precisão", 0, 100000)
+        ativa = self.banco.um("""SELECT COUNT(*) AS n FROM entregas WHERE entregador_id=?
+                                AND status IN ('ofertada','aceita','em_coleta','coletada','em_rota')""", (e["id"],))["n"]
+        if not e["online"] and not ativa:
+            raise ErroNegocio("Ative a disponibilidade para compartilhar a localização com o despacho.")
         agora = self.agora()
-        self.banco.executar("UPDATE entregadores SET lat=?, lng=?, posicao_em=? WHERE id=?", (la, ln, agora, e["id"]))
-        self.banco.executar("INSERT INTO posicoes(id, entregador_id, lat, lng, precisao_m, quando) VALUES (?,?,?,?,?,?)",
-                            (novo_id(), e["id"], la, ln, real(precisao, "a precisão", 0, 100000), agora))
+        with self.banco.transacao() as c:
+            c.execute("UPDATE entregadores SET lat=?, lng=?, posicao_em=? WHERE id=?", (la, ln, agora, e["id"]))
+            c.execute("DELETE FROM posicoes WHERE entregador_id=?", (e["id"],))
+        if e["online"]:
+            self.despachar()
         return {"ok": True}
 
     def painel_entregador(self, ator: Ator) -> dict:
@@ -101,14 +121,43 @@ class LogisticaMixin:
                 for it in c.execute("SELECT * FROM pedido_itens WHERE pedido_id=?", (p["id"],)).fetchall():
                     self._movimento(c, it["oferta_id"], p["empresa_id"], "entrega", it["quantidade"], ator, p["id"])
             elif acao == "entreguei" and en["status"] == "em_rota":
+                chave = "entrega:" + entrega_id
+                if seguranca.FALHAS_CODIGO.bloqueado(chave):
+                    raise ErroNegocio("Muitos códigos errados nesta corrida. Aguarde alguns minutos ou fale com a loja.")
                 if (codigo or "").strip() != p["codigo_retirada"]:
+                    seguranca.FALHAS_CODIGO.falhou(chave)
                     raise ErroNegocio("Código do cliente não confere. Peça o código de 4 dígitos que aparece no app do cliente.")
+                seguranca.FALHAS_CODIGO.sucesso(chave)
                 novo_en = "entregue"
                 self._mudar(c, p, "entregue", ator, "entregue com código do cliente")
             else:
                 raise ErroNegocio("Ação fora de ordem para esta corrida.")
             c.execute("UPDATE entregas SET status=?, atualizada_em=? WHERE id=?", (novo_en, self.agora(), entrega_id))
+            self._limpar_posicao_se_sem_entrega_ativa(c, er["id"])
         self.auditar(ator, f"entrega.{acao}", entrega_id, empresa_id=p["empresa_id"])
+        return self.painel_entregador(ator)
+
+    def reportar_problema_entrega(self, ator: Ator, entrega_id: str, tipo: str, descricao: str = "") -> dict:
+        """Registra ocorrência real, interrompe a corrida e avisa cliente e empresa."""
+        opcoes = {"cliente_recusou", "cliente_nao_pagou", "cliente_ausente", "outro"}
+        if ator.papel != "entregador" or tipo not in opcoes:
+            raise ErroNegocio("Tipo de ocorrência inválido.")
+        with self.banco.transacao() as c:
+            er = self._entregador_do_ator(ator, c)
+            en = self._uma(c, "SELECT * FROM entregas WHERE id=?", (entrega_id,))
+            if not en or en["entregador_id"] != er["id"] or en["status"] != "em_rota":
+                raise ErroNegocio("A ocorrência só pode ser registrada pelo entregador durante a entrega.")
+            p = self._uma(c, "SELECT * FROM pedidos WHERE id=?", (en["pedido_id"],))
+            nota = texto(descricao, 300, True, "a descrição") if descricao else None
+            c.execute("INSERT INTO ocorrencias_entrega(id, entrega_id, entregador_id, tipo, descricao, criada_em) VALUES (?,?,?,?,?,?)",
+                      (novo_id(), entrega_id, er["id"], tipo, nota, self.agora()))
+            c.execute("UPDATE entregas SET status='falhou', atualizada_em=? WHERE id=?", (self.agora(), entrega_id))
+            self._limpar_posicao_se_sem_entrega_ativa(c, er["id"])
+            rotulos = {"cliente_recusou": "cliente recusou o pedido", "cliente_nao_pagou": "pagamento não recebido", "cliente_ausente": "cliente ausente", "outro": "outra ocorrência"}
+            mensagem = f"Entrega do pedido #{p['numero']} interrompida: {rotulos[tipo]}." + (f" Detalhe: {nota}" if nota else "")
+            self.avisar(mensagem, empresa_id=p["empresa_id"], conn=c)
+            self.avisar(mensagem + " A equipe da loja/logística entrará em contato.", usuario_id=p["cliente_id"], link=f"/#pedido/{p['id']}", conn=c)
+        self.auditar(ator, "entrega.ocorrencia", entrega_id, {"tipo": tipo}, empresa_id=p["empresa_id"])
         return self.painel_entregador(ator)
 
     # ================================================================ DISPATCH
@@ -147,11 +196,11 @@ class LogisticaMixin:
             d = distancia_km(e["lat"], e["lng"], u["lat"], u["lng"])
             if d is None:
                 continue
-            # entregador próprio da loja tem preferência (custo menor); carga atual pesa um pouco
-            nota = d + (0 if e["empresa_id"] else 0.8) + e["carga"] * 1.5
+            # Primeiro o menor trajeto; online, GPS recente e capacidade já foram filtrados.
+            nota = d
             lista.append({**e, "distancia_loja_km": d, "nota": round(nota, 2)})
         lista.sort(key=lambda e: e["nota"])
-        for e in lista[:3]:  # os 3 melhores pela linha reta são conferidos pelas ruas
+        for e in lista[:5]:  # candidatos próximos são pré-aquecidos por rota viária real
             r = self.rota(e["lat"], e["lng"], u["lat"], u["lng"], so_cache=True)
             if r and r["fonte"] == "ruas":
                 e["nota"] = round(e["nota"] - e["distancia_loja_km"] + r["km"], 2)
@@ -182,6 +231,9 @@ class LogisticaMixin:
                 cands = self.candidatos(c, p, rec)
                 c.execute("UPDATE entregas SET prioridade=? WHERE id=?", (prioridade, en["id"]))
                 if not cands:
+                    c.execute("UPDATE entregas SET status='falhou', entregador_id=NULL, oferta_expira_em=NULL, atualizada_em=? WHERE id=?",
+                              (agora, en["id"]))
+                    self.avisar(f"Pedido #{p['numero']}: nenhum entregador aceitou/está disponível. A logística pode buscar novamente.", empresa_id=p["empresa_id"], conn=c)
                     continue
                 e = cands[0]
                 eta = (e.get("minutos_loja") or round(e["distancia_loja_km"] / VELOCIDADE_KMH * 60)) + (en["eta_min"] or MINUTOS_COLETA)
@@ -199,7 +251,7 @@ class LogisticaMixin:
             return
         ents = self.banco.todos("SELECT lat, lng FROM entregadores WHERE online=1 AND lat IS NOT NULL")
         for l in lojas[:10]:
-            perto = sorted(ents, key=lambda e: distancia_km(e["lat"], e["lng"], l["lat"], l["lng"]))[:3]
+            perto = sorted(ents, key=lambda e: distancia_km(e["lat"], e["lng"], l["lat"], l["lng"]))[:5]
             for e in perto:
                 self.rota(e["lat"], e["lng"], l["lat"], l["lng"])
 
@@ -222,15 +274,29 @@ class LogisticaMixin:
         else:
             ents = self.banco.todos("""SELECT er.*, us.nome, us.telefone FROM entregadores er JOIN usuarios us ON us.id=er.usuario_id
                                        WHERE er.empresa_id=? ORDER BY er.online DESC, us.nome""", (ator.empresa_alvo(empresa_id),))
-        sem = [x for x in entregas if x["status"] == "aguardando"]
+        sem = [x for x in entregas if x["status"] in ("aguardando", "falhou")]
         return {"entregas": entregas, "entregadores": ents, "sem_entregador": len(sem)}
+
+    def buscar_entregador_novamente(self, ator: Ator, entrega_id: str) -> dict:
+        ator.exigir("dispatch", "operar")
+        with self.banco.transacao() as c:
+            en = ator.conferir_empresa(self._uma(c, "SELECT * FROM entregas WHERE id=?", (entrega_id,)), "Entrega")
+            if en["status"] not in ("falhou", "aguardando"):
+                raise ErroNegocio("A busca só pode ser reiniciada quando não há oferta ativa.")
+            p = self._uma(c, "SELECT * FROM pedidos WHERE id=?", (en["pedido_id"],))
+            if p["status"] != "aguardando_entregador":
+                raise ErroNegocio("O pedido não está mais aguardando entregador.")
+            c.execute("UPDATE entregas SET status='aguardando', entregador_id=NULL, oferta_expira_em=NULL, recusados='[]', atualizada_em=? WHERE id=?",
+                      (self.agora(), entrega_id))
+        self.despachar()
+        return self.painel_dispatch(ator, en["empresa_id"] if ator.plataforma else None)
 
     def designar_manual(self, ator: Ator, entrega_id: str, entregador_id: str) -> dict:
         """Logística escolhe o entregador na mão (fallback quando ninguém aceita)."""
         ator.exigir("dispatch", "operar")
         with self.banco.transacao() as c:
             en = ator.conferir_empresa(self._uma(c, "SELECT * FROM entregas WHERE id=?", (entrega_id,)), "Entrega")
-            if en["status"] not in ("aguardando", "ofertada"):
+            if en["status"] not in ("aguardando", "ofertada", "falhou"):
                 raise ErroNegocio("Esta entrega já tem entregador.")
             er = self._uma(c, "SELECT * FROM entregadores WHERE id=?", (entregador_id,))
             if not er or (er["empresa_id"] and er["empresa_id"] != en["empresa_id"]):

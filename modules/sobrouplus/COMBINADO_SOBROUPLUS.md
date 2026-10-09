@@ -131,5 +131,69 @@ Logo oficial; foto real; visual food-tech; verde como identidade; laranja, coral
 ## 32. REGRA DE INDEPENDÊNCIA
 RMD Delivery original: NÃO ALTERAR. Sobrou+: NOVO SISTEMA. Código copiado deve ser identificado e adaptado no novo projeto. Não reaproveitar banco de forma destrutiva. Não misturar dados entre sistemas.
 
+
+
+## 35. CONTINUIDADE OPERACIONAL E AMBIENTES — IMPLEMENTADO EM 08/10/2026
+Foi criada uma camada de manutenção operacional sem alterar pagamentos, 2FA ou regras de negócio.
+
+### Backup + restauração testada
+- Backup SQLite consistente usando o mecanismo nativo do SQLite.
+- Backup diário automático na inicialização, quando ainda não houver backup do dia.
+- Cada backup recebe SHA-256 e metadados.
+- O backup é copiado para um arquivo temporário e submetido a `PRAGMA integrity_check` antes de ser considerado válido.
+- O teste executado em 08/10/2026 confirmou: backup criado, restauração/teste confirmado e `integrity_check=ok`.
+
+### Monitoramento de integridade
+- Manifesto SHA-256 dos arquivos críticos do backend/frontend.
+- A cada inicialização, o sistema compara os arquivos com a última verificação.
+- Alterações ou arquivos críticos ausentes ficam registrados no resultado da verificação.
+- Banco também passa por `PRAGMA integrity_check`.
+
+### Logs e retenção
+- Auditoria existente continua sendo preservada.
+- Retenção padrão da auditoria: 365 dias.
+- Logs de arquivo: retenção padrão de 180 dias.
+- Limpeza ocorre automaticamente na rotina de manutenção.
+
+### Sessões administrativas
+- A revogação de todas as sessões já está disponível.
+- Alteração de senha revoga as demais sessões, mantendo apenas a sessão atual.
+- Sessões expiradas são removidas automaticamente.
+
+### Separação Desenvolvimento x Produção
+- Produção: `data\\`, porta 8095, launcher `Sobrou+ (producao).bat` / `Sobrou+ (real).bat`.
+- Desenvolvimento: `data_desenvolvimento\\`, porta 8096, launcher `Sobrou+ (desenvolvimento).bat`.
+- O ambiente de desenvolvimento recebeu uma cópia inicial do banco de produção no momento da implantação; depois disso são bases independentes.
+- A regra é testar alterações em desenvolvimento primeiro e somente depois atualizar produção.
+- O RMD Delivery original continua fora desse processo e não é alterado.
+
+### Não incluído nesta etapa
+- 2FA/TOTP permanece adiado por decisão do projeto.
+- Pagamento real/Mercado Pago permanece sem alteração nesta etapa.
+- Senha atual do proprietário permanece sem alteração.
+
 ## 33/34. RESULTADO E DECISÃO FINAL
 SOBROU+ = RMD Delivery como base operacional + marketplace antissobra + gestão inteligente de excedentes + delivery/retirada + preço e estoque por janela + cesta surpresa + doação/destinação + impacto social + identidade visual oficial Sobrou+, SEM ALTERAR O RMD DELIVERY ORIGINAL.
+
+## 2026-10-09 — Claude — Sobrou+: verificação, limpeza e correções de segurança
+- Pasta em uso: `Desktop\ALFA\modules\sobrouplus` (versão 0.2.0). A pasta antiga `Desktop\SobrouPlus` é só da versão 0.1.0.
+- Senha: o código já usa a senha inicial padrão 1234 (regra do Rinaldo). Os 4 testes que ainda esperavam senha aleatória foram atualizados.
+- Limpeza (nada apagado): 20 sobras (17 cópias .bak, 2 scripts de teste soltos, perfil de navegador `.edge_perfil_demo`) foram para `sobrouplus\_para_apagar`; as pastas antigas `sobrou`, `web` e `tests` da 0.1.0 foram para `Desktop\SobrouPlus\_para_apagar`. Pode apagar as duas pastas `_para_apagar` quando quiser.
+- Revisão de segurança feita com ataques reais numa cópia de teste. Pontos fortes confirmados: isolamento entre empresas, papéis, CSRF, SQL, caminhos de arquivo, upload de fotos, telas sem injeção, webhook do Mercado Pago com assinatura, preço/estoque calculados no servidor.
+- Corrigido:
+  1. Limite de tentativas de senha não pode mais ser burlado pelo cabeçalho X-Forwarded-For (usa o último IP, o do túnel). `web/app.py`
+  2. Bloqueio por erro de senha agora vale para e-mail + IP: quem ataca não bloqueia mais o acesso do Desenvolvedor RMD; e-mail inexistente responde igual (mesmo tempo e mesma mensagem). `sobrou/contas.py`, `sobrou/seguranca.py`
+  3. Financeiro da loja não marca mais a própria mensalidade nem repasse como pago/calculado — só a equipe Sobrou+. `sobrou/extras.py`, `sobrou/financeiro.py`
+  4. Travamento: envio com tamanho negativo recusado, tempo máximo de 30 s por conexão, limite nas rotas públicas (telemetria, webhooks) e limpeza das listas de limite. `web/app.py`
+  5. Convite por WhatsApp/e-mail voltava erro 500 (linha presa em comentário) — corrigido. `web/app.py`
+  6. Código de 4 dígitos da entrega: 5 erros travam a corrida por 15 min; retirada no balcão também tem limite. `sobrou/logistica.py`, `sobrou/pedidos.py`
+  7. Relatórios CSV não levam mais fórmulas para o Excel. `sobrou/extras.py`
+  8. Tokens do WhatsApp/e-mail guardados com a proteção do Windows (DPAPI); um backup levado a outro computador não revela os tokens (lá será preciso colar de novo). `sobrou/integracoes.py`
+  9. Endereços de mapas (só https da internet) e servidor de e-mail não podem apontar para a rede interna. `sobrou/integracoes.py`
+  10. "Sair" e "Entrar" também conferem a origem (outro site não desloga a pessoa); X-Forwarded-Host só é aceito do proxy confiável.
+  11. Com túnel (atalhos de produção, `SOBROU_ATRAS_DE_PROXY=1`) o servidor só atende o próprio computador; o celular usa o endereço https. `SOBROU_REDE_LOCAL=1` libera o Wi-Fi se precisar. `web/iniciar.py`
+  12. Para Railway: `SOBROU_PROXY_HOSPEDAGEM=1` faz o sistema reconhecer o HTTPS da hospedagem (cookie Secure e limite por pessoa). A cópia da Railway (dados fictícios) ainda NÃO foi publicada com as correções.
+- Testes: 58 aprovados (10 novos em `tests/test_seguranca_correcoes.py`, um para cada ataque). Ainda falta rodar `Testar Sobrou+.bat` no Windows (a proteção DPAPI só funciona lá).
+- Cópias dos arquivos originais: `sobrouplus\backup_seguranca_20261009\`.
+- Fica para decidir: o cadastro de cliente ainda avisa "já existe uma conta com este e-mail" (normal em apps). Com ataques vindos de muitos lugares, uma conta que nunca trocou o 1234 ainda pode ser adivinhada — recomendação: trocar a senha no primeiro acesso.
+- Para valer: fechar e abrir o Sobrou+ de novo.

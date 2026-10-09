@@ -50,6 +50,8 @@ class FinanceiroMixin:
 
     def calcular_repasse(self, ator: Ator, empresa_id: str, de=None, ate=None) -> dict:
         ator.exigir("financeiro", "repassar")
+        if not ator.plataforma:
+            raise SemPermissao("Só a equipe Sobrou+ calcula repasses.")
         eid = ator.empresa_alvo(empresa_id)
         i, f = _periodo(de, ate)
         fat = ",".join("?" * len(ESTADOS_FATURADOS))
@@ -71,6 +73,8 @@ class FinanceiroMixin:
 
     def marcar_repasse_pago(self, ator: Ator, repasse_id: str, referencia: str) -> dict:
         ator.exigir("financeiro", "repassar")
+        if not ator.plataforma:
+            raise SemPermissao("Só a equipe Sobrou+ registra repasses pagos.")
         r = ator.conferir_empresa(self.banco.um("SELECT * FROM repasses WHERE id=?", (repasse_id,)), "Repasse")
         if r["status"] == "pago":
             raise ErroNegocio("Este repasse já está marcado como pago.")

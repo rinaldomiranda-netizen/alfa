@@ -1,0 +1,3 @@
+test_cadastro_gera_link_e_pessoa_cria_a_propria_senha (test_acesso.TestConvite.test_cadastro_gera_link_e_pessoa_cria_a_propria_senha) ... ok
+test_empresa_nova_ja_vem_com_link_do_responsavel (test_acesso.TestConvite.test_empresa_nova_ja_vem_com_link_do_responsavel) ... ok
+test_novo_link_invalida_o_anterior_e_vence (test_acesso.TestConvite.test_novo_link_invalida_o_anterior_e_vence) ... ^C

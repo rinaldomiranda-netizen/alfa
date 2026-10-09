@@ -485,6 +485,116 @@ ESQUEMA = [
     UPDATE instituicoes SET nome='Instituição Teste RMD' WHERE nome='Instituição Teste do Criador';
     UPDATE ofertas SET descricao='Oferta de TESTE RMD (imagem ilustrativa)' WHERE descricao='Oferta de TESTE do Criador (imagem ilustrativa)';
     """,
+    # 11 — trilha segura de pagamento real e eventos idempotentes do provedor
+    """
+    ALTER TABLE pagamentos ADD COLUMN gateway TEXT;
+    ALTER TABLE pagamentos ADD COLUMN ambiente TEXT;
+    ALTER TABLE pagamentos ADD COLUMN idempotency_key TEXT;
+    ALTER TABLE pagamentos ADD COLUMN preference_id TEXT;
+    ALTER TABLE pagamentos ADD COLUMN parcelas INTEGER;
+    ALTER TABLE pagamentos ADD COLUMN moeda TEXT NOT NULL DEFAULT 'BRL';
+    ALTER TABLE pagamentos ADD COLUMN detalhe_status TEXT;
+    ALTER TABLE pagamentos ADD COLUMN resposta_gateway TEXT;
+    ALTER TABLE pagamentos ADD COLUMN estorno_em TEXT;
+    ALTER TABLE pagamentos ADD COLUMN cancelado_em TEXT;
+    ALTER TABLE pagamentos ADD COLUMN aprovado_em TEXT;
+    CREATE UNIQUE INDEX ux_pag_idempotencia ON pagamentos(idempotency_key) WHERE idempotency_key IS NOT NULL;
+    CREATE UNIQUE INDEX ux_pag_gateway_externo ON pagamentos(gateway, ambiente, externo_id) WHERE externo_id IS NOT NULL;
+    CREATE TABLE eventos_pagamento (
+        gateway TEXT NOT NULL,
+        ambiente TEXT NOT NULL,
+        evento_id TEXT NOT NULL,
+        pagamento_id TEXT,
+        tipo TEXT,
+        recebido_em TEXT NOT NULL,
+        processado_em TEXT,
+        resultado TEXT,
+        PRIMARY KEY (gateway, ambiente, evento_id)
+    );
+    CREATE INDEX ix_eventos_pagamento_id ON eventos_pagamento(pagamento_id, recebido_em);
+    """,
+    # 12 — remove credenciais antigas do gateway que eram guardadas na configuração do app
+    """
+    DELETE FROM config WHERE chave='int:mercadopago';
+    """,
+    # 13 — avaliação bilateral e pontos de fidelidade para pedidos realmente concluídos
+    """
+    CREATE TABLE avaliacoes_clientes (
+        id TEXT PRIMARY KEY,
+        pedido_id TEXT NOT NULL UNIQUE REFERENCES pedidos(id),
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        cliente_id TEXT NOT NULL REFERENCES usuarios(id),
+        nota INTEGER NOT NULL CHECK (nota BETWEEN 1 AND 5),
+        comentario TEXT,
+        criada_em TEXT NOT NULL
+    );
+    CREATE INDEX ix_aval_cliente_empresa ON avaliacoes_clientes(empresa_id, criada_em);
+    CREATE TABLE pontos_fidelidade (
+        pedido_id TEXT PRIMARY KEY REFERENCES pedidos(id),
+        cliente_id TEXT NOT NULL REFERENCES usuarios(id),
+        pontos INTEGER NOT NULL CHECK (pontos > 0),
+        criada_em TEXT NOT NULL
+    );
+    CREATE INDEX ix_pontos_cliente ON pontos_fidelidade(cliente_id, criada_em);
+    """,
+    # 14 — eventos mínimos de navegação para análise de conversão da plataforma; sem IP, nome ou contato
+    """
+    CREATE TABLE eventos_uso (
+        id TEXT PRIMARY KEY,
+        visitante TEXT NOT NULL,
+        tipo TEXT NOT NULL CHECK (tipo IN ('visita', 'loja', 'oferta', 'checkout', 'pedido')),
+        empresa_id TEXT,
+        oferta_id TEXT,
+        criado_em TEXT NOT NULL
+    );
+    CREATE INDEX ix_eventos_data ON eventos_uso(criado_em, tipo);
+    CREATE INDEX ix_eventos_empresa ON eventos_uso(empresa_id, criado_em);
+    """,
+    # 15 — ocorrências reais registradas pelo entregador durante uma tentativa de entrega
+    """
+    CREATE TABLE ocorrencias_entrega (
+        id TEXT PRIMARY KEY,
+        entrega_id TEXT NOT NULL REFERENCES entregas(id),
+        entregador_id TEXT NOT NULL REFERENCES entregadores(id),
+        tipo TEXT NOT NULL CHECK (tipo IN ('cliente_recusou', 'cliente_nao_pagou', 'cliente_ausente', 'outro')),
+        descricao TEXT,
+        criada_em TEXT NOT NULL
+    );
+    CREATE INDEX ix_ocorrencias_entrega ON ocorrencias_entrega(entrega_id, criada_em);
+    """,
+    # 16 — liberação de recursos por empresa, com herança do padrão da plataforma e trilha de auditoria
+    """
+    CREATE TABLE recursos_empresa (
+        empresa_id TEXT NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+        recurso TEXT NOT NULL,
+        habilitado INTEGER NOT NULL CHECK (habilitado IN (0,1)),
+        atualizado_por TEXT REFERENCES usuarios(id),
+        atualizado_em TEXT NOT NULL,
+        PRIMARY KEY (empresa_id, recurso)
+    );
+    CREATE INDEX ix_recursos_empresa_recurso ON recursos_empresa(recurso, habilitado);
+    """,
+    # 17 — registra o custo do hash da senha para endurecimento gradual sem invalidar contas existentes
+    """
+    ALTER TABLE usuarios ADD COLUMN senha_iteracoes INTEGER NOT NULL DEFAULT 200000;
+    """,
+    # 18 — testes com os sócios: cada pessoa ganha uma conta por aplicativo (Central, Loja, Caixa, Entregador, Cliente)
+    """
+    CREATE TABLE testadores (
+        id TEXT PRIMARY KEY,
+        nome TEXT NOT NULL,
+        telefone TEXT,
+        ativo INTEGER NOT NULL DEFAULT 1,
+        criado_por TEXT,
+        criado_em TEXT NOT NULL
+    );
+    CREATE TABLE testador_contas (
+        testador_id TEXT NOT NULL REFERENCES testadores(id),
+        app TEXT NOT NULL,
+        usuario_id TEXT NOT NULL REFERENCES usuarios(id),
+        PRIMARY KEY (testador_id, app)
+    );
+    """,
 ]
 
 _LOCK = threading.Lock()

@@ -1,7 +1,9 @@
 /* Sobrou+ — painel (empresas parceiras, equipe Sobrou+, instituições). Cada tela aparece só para quem tem permissão. */
 "use strict";
 const h = S.h;
-const P = { cfg: {}, eu: null, empresa: "", empresas: [], tela: "inicio" };
+const P = { cfg: {}, eu: null, empresa: "", empresas: [], recursos: [], tela: "inicio", som: false, dispatchAssinatura: null };
+const recursoOn = (key) => !!P.eu?.plataforma || !P.recursos.length || !!P.recursos.find((r) => r.chave === key)?.habilitado;
+function tocarAlertaDispatch() { if (!P.som) return; try { const C=window.AudioContext||window.webkitAudioContext; const a=new C(); const o=a.createOscillator(); const g=a.createGain(); o.frequency.value=720; g.gain.value=.12; o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime+.35); } catch(e) {} }
 const pode = (r, a) => !!(P.eu && (P.eu.permissoes[r] || []).includes(a));
 const ehInst = () => P.eu && P.eu.usuario.papel === "instituicao";
 const eid = () => (P.eu.plataforma ? P.empresa : P.eu.usuario.empresa_id) || "";
@@ -10,29 +12,34 @@ const comEmpresa = (q = {}) => S.qs({ ...q, empresa_id: P.eu.plataforma ? P.empr
 const TELAS = [
   ["Operação"],
   ["inicio", "Visão geral", () => true],
-  ["pedidos", "Pedidos", () => pode("pedidos", "ver")],
-  ["retirada", "Retirada (código/QR)", () => pode("retirada", "validar")],
-  ["ofertas", "Ofertas e estoque", () => pode("ofertas", "ver")],
-  ["unidades", "Unidades", () => pode("unidades", "ver")],
+  ["pedidos", "Pedidos", () => pode("pedidos", "ver") && recursoOn("pedidos")],
+  ["retirada", "Retirada (código/QR)", () => pode("retirada", "validar") && recursoOn("retirada")],
+  ["ofertas", "Ofertas e estoque", () => pode("ofertas", "ver") && recursoOn("ofertas")],
+  ["unidades", "Unidades", () => pode("unidades", "ver") && recursoOn("unidades")],
   ["Logística"],
-  ["dispatch", "Dispatch", () => pode("dispatch", "ver")],
-  ["entregadores", "Entregadores", () => pode("entregadores", "ver")],
+  ["dispatch", "Dispatch", () => pode("dispatch", "ver") && recursoOn("entrega")],
+  ["entregadores", "Entregadores", () => pode("entregadores", "ver") && recursoOn("entrega")],
   ["Dinheiro e impacto"],
-  ["financeiro", "Financeiro e repasses", () => pode("financeiro", "ver")],
-  ["doacoes", "Doações", () => pode("doacoes", "ver") || ehInst()],
-  ["instituicoes", "Instituições", () => pode("instituicoes", "ver")],
+  ["financeiro", "Financeiro e repasses", () => pode("financeiro", "ver") && recursoOn("financeiro")],
+  ["doacoes", "Doações", () => recursoOn("doacoes") && (pode("doacoes", "ver") || ehInst())],
+  ["instituicoes", "Instituições", () => pode("instituicoes", "ver") && recursoOn("doacoes")],
   ["impacto", "Impacto", () => pode("impacto", "ver")],
   ["Gestão"],
+  ["marketing", "Análise e marketing", () => !!P.eu.plataforma && pode("sistema", "ver")],
   ["empresas", "Empresas parceiras", () => pode("empresas", "aprovar")],
-  ["usuarios", "Usuários e acessos", () => pode("usuarios", "ver")],
+  ["recursos", "Recursos para empresas", () => !!P.eu.plataforma && pode("sistema", "ver")],
+  ["usuarios", "Usuários e acessos", () => pode("usuarios", "ver") && recursoOn("usuarios")],
   ["auditoria", "Auditoria", () => pode("auditoria", "ver")],
   ["aparencia", "Aparência e configurações", () => pode("config", "editar") || pode("sistema", "ver")],
   ["integracoes", "Integrações (ativar)", () => pode("sistema", "ver")],
   ["sistema", "Sistema e erros", () => pode("sistema", "ver")],
+  ["seguranca", "Segurança RMD", () => !!P.eu?.eh_dono],
+  ["manutencao", "Manutenção e atualizações", () => !!P.eu?.eh_dono],
   ["conta", "Minha conta", () => true],
 ];
 
 async function iniciar() {
+  P.som = localStorage.getItem("sobrou_dispatch_som") === "1";
   P.cfg = await S.api("/api/config").catch(() => ({}));
   S.tema(P.cfg.tema);
   const hash = location.hash.slice(1);
@@ -43,10 +50,19 @@ async function iniciar() {
   if (P.eu.usuario.papel === "entregador") { location.href = S.u("/entregador"); return; }
   S.tema(P.eu.tema);
   if (P.eu.usuario.trocar_senha) return telaTrocaObrigatoria();
+  if (P.eu.plataforma || P.eu.usuario.empresa_id) P.recursos = (await S.api("/api/recursos")).itens || [];
   if (P.eu.plataforma && pode("empresas", "ver")) P.empresas = (await S.api("/api/empresas")).itens;
-  P.tela = (hash && TELAS.some((t) => t[0] === hash)) ? hash : "inicio";
+  P.tela = (hash && TELAS.some((t) => t[0] === hash && t[2] && t[2]())) ? hash : "inicio";
   montar();
   setInterval(atualizarSino, 20000);
+  setInterval(async () => {
+    if (P.tela !== "dispatch" || !P.eu) return;
+    try {
+      const r = await S.api("/api/dispatch" + comEmpresa());
+      const sig = JSON.stringify(r.entregas.map((x) => [x.id, x.status]));
+      if (P.dispatchAssinatura !== null && sig !== P.dispatchAssinatura) await desenhar();
+    } catch (e) { /* próxima atualização */ }
+  }, 12000);
 }
 
 // ------------------------------------------------------------------ entrada
@@ -103,6 +119,32 @@ function telaCadastroInstituicao() {
       ["telefone", "Telefone"], ["endereco", "Endereço"], ["cidade", "Cidade"], ["pessoas_atendidas", "Pessoas atendidas por mês", "number"]], "Enviar cadastro",
     async (v) => { const r = await S.acao(() => S.api("/api/cadastro/instituicao", { corpo: v })); S.toast(r.mensagem); setTimeout(() => { location.hash = ""; telaLogin(); }, 2500); }),
     h("p", { class: "mudo" }, h("a", { href: "#", onclick: (e) => { e.preventDefault(); location.hash = ""; telaLogin(); } }, "← Voltar")))));
+}
+
+async function telaObrigatoria2FA() {
+  const raiz = document.getElementById("raiz");
+  let config;
+  try { config = await S.api("/api/seguranca/2fa/iniciar", { corpo: {} }); }
+  catch (e) { return S.limpar(raiz, h("div", { class: "login" }, h("div", { class: "cartao" }, h("h2", {}, "Ative a verificação em duas etapas"), h("p", {}, e.message)))); }
+  const codigo = h("input", { type: "text", inputMode: "numeric", autocomplete: "one-time-code", maxLength: 6, placeholder: "000000" });
+  S.limpar(raiz, h("div", { class: "login" }, h("div", { class: "cartao" },
+    S.marca(P.cfg, "Proteja sua conta", "claro"),
+    h("h2", {}, "Ative a verificação em duas etapas"),
+    h("p", {}, "Administradores precisam confirmar o acesso com um aplicativo autenticador."),
+    h("ol", {}, h("li", {}, "Abra Google Authenticator, Microsoft Authenticator ou outro aplicativo TOTP."),
+      h("li", {}, "Escolha adicionar uma conta e leia o QR Code abaixo. Se preferir, use a chave manual."),
+      h("li", {}, h("code", {}, config.segredo)),
+      h("li", {}, "Depois de adicionar a conta, digite aqui o código de 6 números que o aplicativo estiver mostrando agora.")),
+    h("div", { class: "cartao", style: { "text-align": "center", "margin": "1rem 0", "background": "var(--fundo)" } },
+      h("div", { class: "mudo" }, "QR Code para configurar o autenticador"),
+      (typeof qrcode === "function" && config.endereco) ? S.qr(config.endereco, 7) : null,
+      h("p", { class: "mudo" }, "O QR Code configura a conta. Ele não é o código de 6 números usado para confirmar.")),
+    h("label", {}, "Código de 6 números do aplicativo"), codigo,
+    h("button", { class: "btn btn-cta btn-bloco", onclick: async () => {
+      await S.acao(() => S.api("/api/seguranca/2fa/confirmar", { corpo: { codigo: codigo.value.trim() } }), "Verificação ativada.");
+      location.reload();
+    } }, "Confirmar e proteger a conta"),
+    h("p", { class: "mudo" }, "Guarde o código de configuração em local seguro. Ele não será mostrado novamente."))));
 }
 
 function telaTrocaObrigatoria() {
@@ -233,13 +275,33 @@ async function telaPedidos(alvo) {
       : h("p", { class: "mudo" }, "Nenhum pedido neste filtro."));
 }
 
+function avaliacaoClienteNoPedido(p) {
+  if (p.status !== "concluido" || !pode("pedidos", "operar")) return null;
+  if (p.avaliacao_cliente) return h("div", { class: "cartao" }, h("b", {}, "Sua avaliação do cliente: "),
+    h("span", { class: "estrelas" }, "★".repeat(p.avaliacao_cliente.nota) + "☆".repeat(5 - p.avaliacao_cliente.nota)),
+    p.avaliacao_cliente.comentario ? h("p", {}, p.avaliacao_cliente.comentario) : null);
+  let nota = 0;
+  const botoes = [1, 2, 3, 4, 5].map((n) => h("button", { type: "button", class: "estrela-botao", "aria-label": `${n} estrelas`,
+    onclick: () => { nota = n; botoes.forEach((b, i) => b.classList.toggle("on", i < n)); } }, "★"));
+  const comentario = h("textarea", { rows: 2, maxlength: 500, placeholder: "Atendimento, respeito à retirada ou entrega (opcional)" });
+  return h("div", { class: "cartao" }, h("h3", {}, "Avalie este cliente"),
+    h("p", { class: "mudo" }, "Avalie somente o que ocorreu neste pedido concluído. A nota não altera benefícios nem pontos do cliente."),
+    h("div", { class: "estrelas-escolha" }, botoes), comentario,
+    h("button", { class: "btn btn-verde", style: { "margin-top": ".5rem" }, onclick: async () => {
+      if (!nota) return S.toast("Escolha de 1 a 5 estrelas.", true);
+      await S.acao(() => S.api(`/api/pedidos/${p.id}/avaliar-cliente`, { corpo: { nota, comentario: comentario.value.trim() } }), "Avaliação do cliente registrada.");
+      location.hash = "#avaliacoes"; desenhar();
+    } }, "Enviar avaliação"));
+}
+
 async function detalhePedido(id) {
   const p = await S.api("/api/pedidos/" + id);
   S.folha(h("div", {}, h("h2", {}, `Pedido #${p.numero}`), h("p", {}, `${p.cliente || ""} ${p.cliente_telefone ? "· " + p.cliente_telefone : ""}`),
     p.endereco_entrega ? h("p", {}, "Entregar em: " + p.endereco_entrega) : null,
     p.itens.map((i) => h("div", {}, `${i.quantidade}× ${i.nome} — ${S.dinheiro(i.preco_centavos * i.quantidade)}`)),
     h("p", {}, `Produtos ${S.dinheiro(p.subtotal_centavos)} · Taxa Sobrou+ ${S.dinheiro(p.taxa_centavos)} (${p.taxa_percentual}%) · Repasse ${S.dinheiro(p.repasse_centavos)}`),
-    h("h3", {}, "Histórico"), p.historico.map((x) => h("div", { class: "mudo" }, `${S.data(x.quando)} — ${x.para_status.replace(/_/g, " ")}${x.usuario ? " · " + x.usuario : ""}${x.nota ? " · " + x.nota : ""}`))));
+    h("h3", {}, "Histórico"), p.historico.map((x) => h("div", { class: "mudo" }, `${S.data(x.quando)} — ${x.para_status.replace(/_/g, " ")}${x.usuario ? " · " + x.usuario : ""}${x.nota ? " · " + x.nota : ""}`)),
+    avaliacaoClienteNoPedido(p)));
 }
 
 // ------------------------------------------------------------------ retirada
@@ -443,18 +505,23 @@ function editarUnidade(u) {
 async function telaDispatch(alvo) {
   const r = await S.api("/api/dispatch" + comEmpresa());
   const online = r.entregadores.filter((e) => e.online);
-  S.limpar(alvo, h("div", { class: "barra-acoes" }, h("h1", {}, "Dispatch"), h("button", { class: "btn btn-linha btn-p", onclick: desenhar }, "Atualizar")),
+  const assinatura = JSON.stringify(r.entregas.map((x) => [x.id, x.status]));
+  if (P.dispatchAssinatura !== null && P.dispatchAssinatura !== assinatura &&
+      r.entregas.some((x) => x.status === "falhou" && !(P.falhasVistas || new Set()).has(x.id))) tocarAlertaDispatch();
+  P.falhasVistas = new Set(r.entregas.filter((x) => x.status === "falhou").map((x) => x.id));
+  P.dispatchAssinatura = assinatura;
+  S.limpar(alvo, h("div", { class: "barra-acoes" }, h("h1", {}, "Dispatch"),
+    h("button", { class: "btn btn-linha btn-p", onclick: () => { P.som=true; localStorage.setItem("sobrou_dispatch_som","1"); tocarAlertaDispatch(); S.toast("Alertas sonoros ativados neste aparelho."); } }, "Ativar som"),
+    h("button", { class: "btn btn-linha btn-p", onclick: desenhar }, "Atualizar")),
     h("div", { class: "kpis" }, kpi("Sem entregador", String(r.sem_entregador), r.sem_entregador ? "coral" : ""), kpi("Entregadores online", String(online.length), "verde"),
       kpi("Em rota", String(r.entregas.filter((e) => ["aceita", "em_coleta", "em_rota"].includes(e.status)).length), "laranja")),
     h("div", { class: "mapa alto", id: "mapa-dispatch", style: { "margin-bottom": "1rem" } }),
-    h("p", { class: "mudo" }, "Ordem de prioridade: janela/validade mais curta primeiro. Escolha do entregador: distância pelas ruas até a loja (GPS dos últimos 10 min), capacidade, preferência pelo entregador próprio da loja. Recusa ou 90 s sem resposta → próximo entregador."),
+    h("p", { class: "mudo" }, "Ordem de prioridade: janela/validade mais curta primeiro. Entre entregadores disponíveis, primeiro o menor trajeto pelas ruas até a loja (GPS dos últimos 10 min); capacidade e vínculo com a loja definem elegibilidade. Recusa ou 60 s sem resposta → próximo."),
     h("div", { class: "cartao rolagem" }, h("table", { class: "tabela" }, h("thead", {}, h("tr", {}, ["Pedido", "Loja", "Destino", "Prazo", "Entregador", "Estado", ""].map((t) => h("th", {}, t)))),
       h("tbody", {}, r.entregas.map((e) => h("tr", {}, h("td", {}, `#${e.numero}`), h("td", {}, e.loja), h("td", {}, e.endereco_entrega || "—", e.distancia_km !== null ? h("div", { class: "mudo" }, `${e.distancia_km} km`) : null),
         h("td", {}, e.janela_fim ? S.hora(e.janela_fim) : "—"), h("td", {}, e.entregador || "—", e.eta_min ? h("div", { class: "mudo" }, `~${e.eta_min} min`) : null),
         h("td", {}, S.selo(e.status.replace(/_/g, " "), { aguardando: "urgente", ofertada: "aviso", entregue: "ok", falhou: "urgente" }[e.status] || "oferta")),
-        h("td", {}, pode("dispatch", "operar") && ["aguardando", "ofertada"].includes(e.status) ? h("select", { style: { width: "auto" }, onchange: async (ev) => {
-          if (!ev.target.value) return; await S.acao(() => S.api(`/api/dispatch/${e.id}/designar`, { corpo: { entregador_id: ev.target.value } }), "Corrida enviada ao entregador."); desenhar(); } },
-          h("option", { value: "" }, "Designar…"), r.entregadores.map((x) => h("option", { value: x.id }, `${x.nome}${x.online ? " (online)" : ""}`))) : null)))))));
+        h("td", {}, e.status === "falhou" && pode("dispatch", "operar") ? h("button", { class: "btn btn-cta btn-p", onclick: async () => { await S.acao(() => S.api("/api/dispatch/" + e.id + "/buscar", { corpo: {} }), "Nova busca iniciada."); desenhar(); } }, "Buscar novamente") : e.status === "aguardando" ? S.selo("Busca automática ativa", "aviso") : e.status === "ofertada" ? S.selo("Aguardando aceite", "aviso") : null)))))));
   mapaDispatch(r);
 }
 
@@ -464,7 +531,7 @@ function mapaDispatch(r) {
   r.entregas.filter((e) => !["entregue", "falhou"].includes(e.status)).forEach((e) => {
     if (e.loja_lat !== null) { S.marcar(m, e.loja_lat, e.loja_lng, "#0A563A", "L", `#${e.numero} — coleta: ${e.loja}`); pontos.push([e.loja_lat, e.loja_lng]); }
     if (e.entrega_lat !== null) { S.marcar(m, e.entrega_lat, e.entrega_lng, e.status === "aguardando" ? "#E74A3B" : "#F57A20", "C", `#${e.numero} — entrega: ${e.endereco_entrega || ""}`); pontos.push([e.entrega_lat, e.entrega_lng]); }
-    if (e.loja_lat !== null && e.entrega_lat !== null) L.polyline([[e.loja_lat, e.loja_lng], [e.entrega_lat, e.entrega_lng]], { color: "#F57A20", weight: 2, dashArray: "4 6" }).addTo(m);
+    if (e.loja_lat !== null && e.entrega_lat !== null) S.desenharRota(m, [e.loja_lat, e.loja_lng], [e.entrega_lat, e.entrega_lng], "#F57A20");
   });
   r.entregadores.filter((x) => x.online && x.lat !== null).forEach((x) => { S.marcar(m, x.lat, x.lng, "#2563EB", "E", `${x.nome} (GPS ${S.hora(x.posicao_em)})`); pontos.push([x.lat, x.lng]); });
   S.enquadrar(m, pontos);
@@ -664,6 +731,125 @@ async function telaAparencia(alvo) {
   S.limpar(alvo, blocos);
 }
 
+async function telaManutencao(alvo) {
+  if (!P.eu?.eh_dono) throw new Error("Área exclusiva do desenvolvedor RMD.");
+  const r = await S.api("/api/manutencao/painel");
+  const b = r.backup || {};
+  const integ = r.integridade || {};
+  const banco = integ.banco === "ok";
+  const arquivos = integ.arquivos || {};
+  const alterados = arquivos.alterados_desde_ultima_verificacao || [];
+  const faltantes = arquivos.faltantes || [];
+  const status = (ok, sim = "OK", nao = "ATENÇÃO") => S.selo(ok ? sim : nao, ok ? "ok" : "urgente");
+  S.limpar(alvo,
+    h("h1", {}, "Manutenção e atualizações"),
+    h("p", { class: "mudo" }, "Área exclusiva do Desenvolvedor RMD. As programações e testes devem ser feitos no ambiente de desenvolvimento, separado do sistema oficial."),
+    h("div", { class: "kpis" },
+      kpi("Ambiente atual", r.ambiente === "producao" ? "PRODUÇÃO" : "DESENVOLVIMENTO", r.ambiente === "producao" ? "verde" : "laranja"),
+      kpi("Porta", String(r.porta)),
+      kpi("Banco", status(banco)),
+      kpi("Backup", status(!!b.ok && b.restore_testado, "TESTADO", "ATENÇÃO"))),
+    h("div", { class: "cartao" },
+      h("h2", {}, "Como funciona"),
+      h("p", {}, "1. O desenvolvedor trabalha em um ambiente separado de desenvolvimento."),
+      h("p", {}, "2. As alterações são testadas lá, sem mexer diretamente no sistema oficial."),
+      h("p", {}, "3. Antes de uma atualização, pode ser feita uma cópia de segurança do sistema oficial."),
+      h("p", {}, "4. A integridade do banco e dos arquivos principais pode ser conferida antes da publicação.")),
+    h("div", { class: "cartao" },
+      h("h2", {}, "Ambientes"),
+      h("div", { class: "estado-int" }, h("span", {}, "Sistema oficial"), h("span", {}, "Produção · dados\\ · porta 8095")),
+      h("div", { class: "estado-int" }, h("span", {}, "Área de desenvolvimento"), h("span", {}, "data_desenvolvimento\\ · porta 8096")),
+      h("p", { class: "mudo" }, "O ambiente de desenvolvimento é separado para permitir testes sem alterar diretamente os dados do sistema oficial.")),
+    h("div", { class: "cartao" },
+      h("h2", {}, "Manutenção"),
+      h("div", { class: "linha" },
+        h("button", { class: "btn btn-cta", onclick: async () => { const x = await S.acao(() => S.api("/api/manutencao/backup", { method: "POST", corpo: {} }), "Backup criado e testado."); if (x) desenhar(); } }, "Fazer backup e testar"),
+        h("button", { class: "btn btn-linha btn-p", onclick: async () => { await S.acao(() => S.api("/api/manutencao/integridade", { method: "POST", corpo: {} }), "Integridade verificada."); desenhar(); } }, "Verificar integridade")),
+      h("p", { class: "mudo" }, "Essas ações não publicam código nem alteram regras do sistema; elas cuidam da segurança operacional antes das modificações.")),
+    h("div", { class: "cartao" },
+      h("h2", {}, "Último backup"),
+      h("p", {}, r.ultimo_backup || "Nenhum backup encontrado."),
+      h("p", { class: "mudo" }, "Banco de dados: ", String(r.dados))),
+    (alterados.length || faltantes.length) ? h("div", { class: "cartao" }, h("h2", {}, "Atenção"),
+      alterados.length ? h("p", {}, "Arquivos principais alterados: ", alterados.join(", ")) : null,
+      faltantes.length ? h("p", {}, "Arquivos principais ausentes: ", faltantes.join(", ")) : null) : null
+  );
+}
+
+async function telaSeguranca(alvo) {
+  if (!P.eu?.eh_dono) throw new Error("Área exclusiva do proprietário RMD.");
+  const s = await S.api("/api/seguranca/painel");
+  const nomes = {
+    sessao_horas: "Sessão máxima", csrf_json: "Proteção de origem/CSRF", isolamento_empresas: "Isolamento entre empresas",
+    auditoria: "Auditoria de segurança", limpeza_sessoes_expiradas: "Limpeza automática de sessões",
+    rate_limit_login: "Limite de tentativas", upload_imagens_validado: "Validação de uploads",
+    lgpd: "Proteção de dados/LGPD", backup_automatico: "Backup automático", totp: "2FA",
+    financeiro_producao: "Financeiro em produção"
+  };
+  const protecoes = Object.entries(s.protecao || {}).map(([k, v]) => {
+    const adiado = String(v).startsWith("adiado");
+    const valor = typeof v === "number" ? v + " h" : S.selo(adiado ? "ADIADO" : "ATIVO", adiado ? "aviso" : "ok");
+    return h("div", { class: "estado-int" }, h("span", {}, nomes[k] || k), h("span", {}, valor));
+  });
+  const falhas = s.contas_com_falhas || [];
+  const eventos = s.eventos_seguranca || [];
+  const linhasFalhas = falhas.map((x) => h("tr", {},
+    h("td", {}, x.nome + " · " + x.email),
+    h("td", {}, x.papel),
+    h("td", {}, String(x.tentativas_falhas || 0)),
+    h("td", {}, x.bloqueado_ate ? S.data(x.bloqueado_ate) : "—")
+  ));
+  const blocoFalhas = falhas.length ? h("div", { class: "cartao rolagem" },
+    h("h2", {}, "Contas com tentativas/bloqueios"),
+    h("table", { class: "tabela" },
+      h("thead", {}, h("tr", {}, ["Usuário", "Perfil", "Tentativas", "Bloqueado até"].map((x) => h("th", {}, x)))),
+      h("tbody", {}, linhasFalhas)
+    )
+  ) : null;
+
+  const linhasSessoes = (s.sessoes_ativas || []).map((x) => h("tr", {},
+    h("td", {}, x.usuario + " · " + x.email),
+    h("td", {}, x.papel),
+    h("td", {}, x.empresa_id || "Plataforma"),
+    h("td", {}, x.ip || "—"),
+    h("td", {}, S.data(x.criada_em)),
+    h("td", {}, S.data(x.expira_em))
+  ));
+  const blocoSessoes = h("div", { class: "cartao rolagem" },
+    h("h2", {}, "Sessões ativas"),
+    linhasSessoes.length ? h("table", { class: "tabela" },
+      h("thead", {}, h("tr", {}, ["Usuário", "Perfil", "Empresa", "IP", "Criada", "Expira"].map((x) => h("th", {}, x)))),
+      h("tbody", {}, linhasSessoes)
+    ) : h("p", { class: "mudo" }, "Nenhuma sessão ativa.")
+  );
+
+  const linhasEventos = eventos.map((x) => h("tr", {},
+    h("td", {}, S.data(x.quando)),
+    h("td", {}, x.usuario || "rotina"),
+    h("td", {}, x.acao),
+    h("td", { class: "mudo" }, x.detalhe || "—"),
+    h("td", {}, x.ip || "—")
+  ));
+  const blocoEventos = h("div", { class: "cartao rolagem" },
+    h("h2", {}, "Eventos de segurança"),
+    linhasEventos.length ? h("table", { class: "tabela" },
+      h("thead", {}, h("tr", {}, ["Quando", "Usuário", "Ação", "Detalhe", "IP"].map((x) => h("th", {}, x)))),
+      h("tbody", {}, linhasEventos)
+    ) : h("p", { class: "mudo" }, "Nenhum evento de segurança registrado.")
+  );
+  S.limpar(alvo,
+    h("h1", {}, "Segurança RMD"),
+    h("p", { class: "mudo" }, "Área exclusiva do proprietário do sistema RMD. Os dados abaixo não são exibidos aos administradores das empresas."),
+    h("div", { class: "kpis" },
+      kpi("Sessões ativas", String(s.total_sessoes_ativas)),
+      kpi("Contas com tentativas", String(falhas.length), falhas.length ? "coral" : "verde"),
+      kpi("Backup", s.backup_ok ? "OK" : "ATENÇÃO", s.backup_ok ? "verde" : "coral"),
+      kpi("Último backup", s.ultimo_backup ? S.data(s.ultimo_backup) : "Nunca", s.ultimo_backup ? "" : "coral")),
+    h("div", { class: "cartao" }, h("h2", {}, "Proteções ativas"), protecoes),
+    blocoFalhas, blocoSessoes, blocoEventos
+  );
+}
+
 async function telaSistema(alvo) {
   const s = await S.api("/api/sistema");
   S.limpar(alvo, h("h1", {}, "Sistema e integrações"), h("div", { class: "kpis" }, kpi("Versão", s.versao), kpi("Empresas", String(s.empresas)), kpi("Em análise", String(s.aguardando_aprovacao), s.aguardando_aprovacao ? "laranja" : ""),
@@ -684,6 +870,14 @@ async function telaIntegracoes(alvo) {
   const r = await S.api("/api/integracoes");
   const cartao = (nome, titulo, explicacao, campos, extra) => {
     const c = r[nome];
+    if (nome === "mercadopago") return h("div", { class: "cartao", style: { "margin-bottom": "1rem" } },
+      h("div", { class: "linha" }, h("h2", { style: { margin: 0 } }, titulo), S.selo(c.configurado ? "CONFIGURADO" : "DESLIGADO", c.configurado ? "ok" : "aviso")),
+      h("p", { class: "mudo" }, "Access Token, chave pública e segredo do webhook são lidos somente do ambiente do servidor. Nunca são gravados no banco nem enviados ao navegador."),
+      h("p", {}, "Provedor: ", c.provedor || "não definido", " · Ambiente: ", c.ambiente || "sandbox"),
+      h("p", {}, "Pix: ", c.configurado ? "disponível" : "aguardando configuração", " · Cartão e boleto: Checkout Pro (meios habilitados pela conta) · Parcelas máximas: ", String(c.parcelas_maximas || "—")),
+      h("p", { class: "mudo" }, "Webhook HTTPS: ", c.webhook_url || "não configurado"),
+      h("p", { class: "mudo" }, "Public Key: ", c.public_key || "não configurada", " · Access Token: ", c.access_token_configurado ? "configurado" : "ausente", " · Secret webhook: ", c.webhook_secret_configurado ? "configurado" : "ausente"),
+      h("p", {}, "Configure as variáveis de ambiente documentadas em PAGAMENTOS.md e reinicie o serviço. O ambiente de teste exige credenciais TEST-; produção rejeita credenciais TEST-."));
     const f = formulario(campos.map(([k, rot, tipo = "text", ex = {}]) => [k, rot, tipo, { valor: c[k] ?? ex.padrao ?? "", placeholder: ex.placeholder }]), "Salvar",
       async (v) => { await S.acao(() => S.api("/api/integracoes/" + nome, { method: "PUT", corpo: v }), "Integração salva."); desenhar(); });
     const resultado = h("div", { class: "mudo", style: { "margin-top": ".5rem" } });
@@ -696,8 +890,8 @@ async function telaIntegracoes(alvo) {
           S.limpar(resultado, S.selo(t.ok ? "OK" : "FALHOU", t.ok ? "ok" : "urgente"), " ", t.mensagem); } catch (e) { S.limpar(resultado, e.message); } } }, "Testar conexão")), resultado);
   };
   S.limpar(alvo, h("h1", {}, "Integrações"),
-    h("p", { class: "mudo" }, "Tudo já está programado. Para ativar, basta colocar aqui as credenciais das contas e marcar “Ligado”. Os campos de chave nunca mostram o valor guardado (aparecem como ••••)."),
-    cartao("mercadopago", "Pagamento — Pix e cartão (Mercado Pago)",
+    h("p", { class: "mudo" }, "WhatsApp, mapas e e-mail podem ser configurados aqui. Credenciais de pagamento ficam exclusivamente nas variáveis protegidas do servidor."),
+    cartao("mercadopago", "Pagamento online (Mercado Pago)",
       h("div", {}, "1) Crie/entre na conta Mercado Pago → Seu negócio → Configurações → Credenciais. 2) Copie o Access Token (comece pelo de TESTE: “TEST-…”). ",
         "3) Em Webhooks, cadastre o endereço abaixo, evento “Pagamentos”, e copie a assinatura secreta. 4) Cole aqui e ligue.",
         h("div", { class: "copia", style: { "margin-top": ".4rem" } }, r.url_webhook)),
@@ -719,6 +913,73 @@ async function telaIntegracoes(alvo) {
       r.mensagens.ultimas.map((m) => h("div", { class: "estado-int" }, h("span", {}, `${m.telefone} — ${m.texto}`), S.selo(m.status, m.status === "enviada" ? "ok" : m.status === "falhou" ? "urgente" : "aviso")))));
 }
 
-const FUNCOES = { integracoes: telaIntegracoes, inicio: telaInicio, pedidos: telaPedidos, retirada: telaRetirada, ofertas: telaOfertas, unidades: telaUnidades, dispatch: telaDispatch, entregadores: telaEntregadores,
+async function telaRecursos(alvo) {
+  if (!P.eu.plataforma || !pode("sistema", "ver")) throw new Error("Acesso restrito à equipe Sobrou+.");
+  const padrao = await S.api("/api/recursos");
+  const itens = padrao.itens || [];
+  const formularioPadrao = formulario(itens.map((x) => ["r_" + x.chave, x.nome, "checkbox", { valor: x.habilitado }]),
+    "Salvar padrão da plataforma", async (v) => {
+      const recursos = Object.fromEntries(itens.map((x) => [x.chave, !!v["r_" + x.chave]]));
+      const salvo = await S.acao(() => S.api("/api/recursos", { method: "PUT", corpo: { recursos } }), "Padrões salvos.");
+      P.recursos = salvo.itens;
+      desenhar();
+    });
+  const blocos = [h("h1", {}, "Recursos para empresas"),
+    h("p", { class: "mudo" }, "Defina o padrão para novas liberações e, se necessário, ajuste uma empresa. As mudanças são registradas na auditoria e bloqueadas também pela API. Como o checkout online é o único meio ativo hoje, desativar pagamentos também bloqueia a criação de pedidos.")];
+  blocos.push(h("div", { class: "cartao" }, h("h2", {}, "Padrão da plataforma"), formularioPadrao));
+  if (P.empresa) {
+    const porEmpresa = await S.api("/api/empresas/" + P.empresa + "/recursos");
+    const formularioEmpresa = formulario(porEmpresa.itens.map((x) => ["r_" + x.chave, x.nome, "select", {
+      valor: x.sobrescrito === null ? "herdar" : x.sobrescrito ? "liberado" : "bloqueado",
+      opcoes: [["herdar", "Usar padrão (" + (x.padrao ? "liberado" : "bloqueado") + ")"],
+        ["liberado", "Liberado nesta empresa"], ["bloqueado", "Bloqueado nesta empresa"]]
+    }]), "Salvar recursos da empresa", async (v) => {
+      const recursos = Object.fromEntries(porEmpresa.itens.map((x) => {
+        const valor = v["r_" + x.chave];
+        return [x.chave, valor === "herdar" ? null : valor === "liberado"];
+      }));
+      await S.acao(() => S.api("/api/empresas/" + P.empresa + "/recursos", { method: "PUT", corpo: { recursos } }), "Acesso da empresa atualizado.");
+      desenhar();
+    });
+    blocos.push(h("div", { class: "cartao" }, h("h2", {}, "Empresa: " + porEmpresa.empresa), formularioEmpresa));
+  } else {
+    blocos.push(h("div", { class: "cartao" }, h("h2", {}, "Configuração individual"), h("p", {}, "Escolha uma empresa no seletor do cabeçalho para substituir o padrão ou voltar a herdar as opções globais.")));
+  }
+  S.limpar(alvo, blocos);
+}
+
+async function telaMarketing(alvo) {
+  if (!P.eu.plataforma || !pode("sistema", "ver")) throw new Error("Acesso restrito.");
+  const r = await S.api("/api/marketing" + comEmpresa({ dias: 30 }));
+  const cabecalho = h("div", { class: "kpis" },
+    kpi("Entradas no app", String(r.acessos_web)),
+    kpi("Visitas a empresas", String(r.visitas)),
+    kpi("Pedidos", String(r.pedidos), "verde"),
+    kpi("Conversão", r.conversao_pct === null ? "—" : r.conversao_pct + "%", "laranja"));
+  const maxDia = Math.max(1, ...r.serie.map((x) => x.visitantes));
+  const grafico = h("div", { class: "cartao" }, h("h2", {}, "Acessos por dia"),
+    r.serie.length ? h("div", { style: { display: "flex", "align-items": "end", overflow: "auto", height: "130px" } },
+      r.serie.map((x) => h("div", { title: x.dia + " · " + x.visitantes + " visitantes · " + x.pedidos + " pedidos",
+        style: { height: Math.max(4, x.visitantes / maxDia * 95) + "px", width: "18px", margin: "0 2px", background: "#1FA361", "border-radius": "4px 4px 0 0", "align-self": "end" } })))
+      : h("p", { class: "mudo" }, "Sem acessos registrados."));
+  const linhas = r.por_empresa.map((x) => h("tr", {},
+    h("td", {}, x.empresa), h("td", {}, String(x.visitas || 0)),
+    h("td", {}, String(x.interesse || 0)), h("td", {}, String(x.checkouts || 0)),
+    h("td", {}, String(x.pedidos || 0)),
+    h("td", {}, x.conversao_pct === null ? "—" : x.conversao_pct + "%"),
+    h("td", {}, String(x.desistencia_checkout || 0))));
+  const tabela = h("div", { class: "cartao rolagem" }, h("h2", {}, "Por empresa"),
+    r.por_empresa.length ? h("table", { class: "tabela" },
+      h("thead", {}, h("tr", {}, ["Empresa", "Visitas", "Ofertas", "Checkouts", "Pedidos", "Conversão", "Desistências"].map((x) => h("th", {}, x)))),
+      h("tbody", {}, linhas))
+      : h("p", { class: "mudo" }, "Nenhum evento neste período."));
+  S.limpar(alvo, h("h1", {}, "Análise e marketing"),
+    h("p", { class: "mudo" }, "Eventos reais dos últimos 30 dias; sem dados anteriores ou fictícios."),
+    cabecalho, grafico, tabela,
+    h("div", { class: "cartao" }, h("h2", {}, "Recomendações"),
+      r.sugestoes.map((x) => h("p", {}, x)), h("p", { class: "mudo" }, r.nota)));
+}
+
+const FUNCOES = { marketing: telaMarketing, recursos: telaRecursos, integracoes: telaIntegracoes, inicio: telaInicio, pedidos: telaPedidos, retirada: telaRetirada, ofertas: telaOfertas, unidades: telaUnidades, dispatch: telaDispatch, entregadores: telaEntregadores,
   financeiro: telaFinanceiro, doacoes: telaDoacoes, instituicoes: telaInstituicoes, impacto: telaImpacto, empresas: telaEmpresas, usuarios: telaUsuarios, auditoria: telaAuditoria,
-  aparencia: telaAparencia, sistema: telaSistema, conta: telaConta };
+  aparencia: telaAparencia, sistema: telaSistema, seguranca: telaSeguranca, manutencao: telaManutencao, conta: telaConta };

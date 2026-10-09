@@ -130,6 +130,27 @@ class TestRelatoriosAvaliacoesPlanos(Base):
         self.p.responder_avaliacao(self.a, av["itens"][0]["id"], "Obrigado!")
         self.assertEqual(self.p.listar_avaliacoes(self.b)["total"], 0)
 
+    def test_avaliacao_bilateral_e_pontos_unicos(self):
+        o = self.oferta()
+        aberto = self.p.criar_pedido(self.cli, {"itens": [{"oferta_id": o["id"], "quantidade": 1}]})
+        with self.assertRaises(ErroNegocio):
+            self.p.avaliar_cliente_pedido(self.a, aberto["id"], 5)
+        ped = self._venda()
+        self.p.avaliar_cliente_pedido(self.a, ped["id"], 4, "Retirada tranquila.")
+        self.assertEqual(self.p.obter_pedido(self.a, ped["id"])["avaliacao_cliente"]["nota"], 4)
+        self.assertNotIn("avaliacao_cliente", self.p.obter_pedido(self.cli, ped["id"]))
+        with self.assertRaises(ErroNegocio):
+            self.p.avaliar_cliente_pedido(self.a, ped["id"], 5)
+        recebidas = self.p.listar_avaliacoes_clientes(self.a)
+        self.assertEqual((recebidas["total"], recebidas["itens"][0]["nota"]), (1, 4))
+        reputacao = self.p.minha_reputacao(self.cli)
+        self.assertEqual(reputacao["media"], 4.0)
+        self.assertEqual(reputacao["total"], 1)
+        self.assertEqual(reputacao["itens"][0]["loja"], self.emp_a["nome"])
+        self.assertEqual(reputacao["pontos"], ped["subtotal_centavos"] // 100)
+        with self.assertRaises(ErroNegocio):
+            self.p.listar_avaliacoes_clientes(self.cli)
+
     def test_planos_taxa_limite_e_fatura(self):
         planos = {p["nome"]: p for p in self.p.listar_planos(self.adm)}
         self.p.definir_plano(self.adm, self.emp_a["id"], planos["Essencial"]["id"])

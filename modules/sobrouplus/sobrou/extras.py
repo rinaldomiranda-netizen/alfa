@@ -99,8 +99,8 @@ class ExtrasMixin:
         except seguranca.SenhaFraca as e:
             raise ErroNegocio(str(e)) from e
         salt = seguranca.gerar_salt()
-        self.banco.executar("UPDATE usuarios SET senha_hash=?, senha_salt=?, trocar_senha=0, tentativas_falhas=0, bloqueado_ate=NULL WHERE id=?",
-                            (seguranca.hash_senha(nova, salt), salt, u["id"]))
+        self.banco.executar("UPDATE usuarios SET senha_hash=?, senha_salt=?, senha_iteracoes=?, trocar_senha=0, tentativas_falhas=0, bloqueado_ate=NULL WHERE id=?",
+                            (seguranca.hash_senha(nova, salt), salt, seguranca.ITERACOES, u["id"]))
         self.banco.executar("UPDATE codigos_senha SET usado=1 WHERE id=?", (c["id"],))
         self.banco.executar("DELETE FROM sessoes WHERE usuario_id=?", (u["id"],))
         self.auditar(Ator(u["id"], u["papel"], u["nome"], u["empresa_id"]), "usuario.senha_por_codigo", u["id"], empresa_id=u["empresa_id"])
@@ -152,6 +152,8 @@ class ExtrasMixin:
                 "pedidos": self.banco.todos("""SELECT p.numero, p.status, p.modo, p.total_centavos, p.criado_em, e.nome AS loja FROM pedidos p
                                                JOIN empresas e ON e.id=p.empresa_id WHERE p.cliente_id=? ORDER BY p.criado_em""", (ator.usuario_id,)),
                 "avaliacoes": self.banco.todos("SELECT nota, comentario, criada_em FROM avaliacoes WHERE cliente_id=?", (ator.usuario_id,)),
+                "avaliacoes_recebidas": self.banco.todos("SELECT nota, comentario, criada_em FROM avaliacoes_clientes WHERE cliente_id=?", (ator.usuario_id,)),
+                "pontos_fidelidade": self.banco.um("SELECT COALESCE(SUM(pontos),0) AS total FROM pontos_fidelidade WHERE cliente_id=?", (ator.usuario_id,))["total"],
                 "favoritos": self.banco.todos("SELECT e.nome FROM favoritos f JOIN empresas e ON e.id=f.empresa_id WHERE f.cliente_id=?", (ator.usuario_id,))}
 
     def excluir_minha_conta(self, ator: Ator, senha: str) -> dict:
@@ -159,7 +161,7 @@ class ExtrasMixin:
         if ator.papel != "cliente":
             raise SemPermissao("Contas de empresa, entregador ou equipe são encerradas pelo administrador.")
         u = self.banco.um("SELECT * FROM usuarios WHERE id=?", (ator.usuario_id,))
-        if not seguranca.conferir_senha(senha or "", u["senha_salt"], u["senha_hash"]):
+        if not seguranca.conferir_senha(senha or "", u["senha_salt"], u["senha_hash"], int(u.get("senha_iteracoes") or 200_000)): 
             raise ErroNegocio("Senha incorreta.")
         abertos = self.banco.um("""SELECT COUNT(*) AS n FROM pedidos WHERE cliente_id=? AND status IN
                                    ('aguardando_pagamento','pago','recebido','preparando','pronto','aguardando_retirada','aguardando_entregador',
@@ -309,24 +311,69 @@ class ExtrasMixin:
         saida = io.StringIO()
         w = csv.writer(saida, delimiter=";")  # ";" abre direto no Excel em português
         w.writerow(self.RELATORIOS[tipo][1])
-        w.writerows(dados)
+        # Texto que começa com = + - @ viraria fórmula no Excel: entra como texto comum.
+        w.writerows([[("'" + v) if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") else v for v in linha]
+                     for linha in dados])
         self.auditar(ator, "relatorio.baixar", tipo, {"linhas": len(dados)}, empresa_id=None if ator.plataforma else ator.empresa_id)
         return f"sobrou_{tipo}_{self.agora_dt().strftime('%Y%m%d')}.csv", ("﻿" + saida.getvalue()).encode("utf-8")
 
     # ================================================================ AVALIAÇÕES
     def avaliar_pedido(self, ator: Ator, pedido_id: str, nota, comentario=None) -> dict:
-        p = self.banco.um("SELECT * FROM pedidos WHERE id=?", (pedido_id,))
-        if not p or p["cliente_id"] != ator.usuario_id:
-            raise NaoEncontrado("Pedido não encontrado.")
-        if p["status"] != "concluido":
-            raise ErroNegocio("Você pode avaliar depois que o pedido for concluído.")
-        if self.banco.um("SELECT id FROM avaliacoes WHERE pedido_id=?", (pedido_id,)):
-            raise ErroNegocio("Este pedido já foi avaliado.")
         n = inteiro(nota, "a nota", 1, 5)
-        self.banco.executar("INSERT INTO avaliacoes(id, pedido_id, empresa_id, cliente_id, nota, comentario, criada_em) VALUES (?,?,?,?,?,?,?)",
-                            (novo_id(), pedido_id, p["empresa_id"], ator.usuario_id, n, texto(comentario, 500), self.agora()))
-        self.avisar(f"Nova avaliação: {'★' * n}{'☆' * (5 - n)} no pedido #{p['numero']}.", empresa_id=p["empresa_id"])
+        with self.banco.transacao() as c:
+            p = self._uma(c, "SELECT * FROM pedidos WHERE id=?", (pedido_id,))
+            if not p or p["cliente_id"] != ator.usuario_id:
+                raise NaoEncontrado("Pedido não encontrado.")
+            if p["status"] != "concluido":
+                raise ErroNegocio("Você pode avaliar depois que o pedido for concluído.")
+            if c.execute("SELECT id FROM avaliacoes WHERE pedido_id=?", (pedido_id,)).fetchone():
+                raise ErroNegocio("Este pedido já foi avaliado.")
+            c.execute("INSERT INTO avaliacoes(id, pedido_id, empresa_id, cliente_id, nota, comentario, criada_em) VALUES (?,?,?,?,?,?,?)",
+                      (novo_id(), pedido_id, p["empresa_id"], ator.usuario_id, n, texto(comentario, 500), self.agora()))
+            self.avisar(f"Nova avaliação: {'★' * n}{'☆' * (5 - n)} no pedido #{p['numero']}.", empresa_id=p["empresa_id"], conn=c)
         return {"ok": True}
+
+    def avaliar_cliente_pedido(self, ator: Ator, pedido_id: str, nota, comentario=None) -> dict:
+        """Empresa avalia o cliente apenas após uma compra concluída e uma única vez."""
+        ator.exigir("pedidos", "operar")
+        n = inteiro(nota, "a nota", 1, 5)
+        with self.banco.transacao() as c:
+            p = ator.conferir_empresa(self._uma(c, "SELECT * FROM pedidos WHERE id=?", (pedido_id,)), "Pedido")
+            if p["status"] != "concluido":
+                raise ErroNegocio("A avaliação do cliente fica disponível depois que o pedido for concluído.")
+            if c.execute("SELECT id FROM avaliacoes_clientes WHERE pedido_id=?", (pedido_id,)).fetchone():
+                raise ErroNegocio("Este cliente já foi avaliado neste pedido.")
+            c.execute("INSERT INTO avaliacoes_clientes(id,pedido_id,empresa_id,cliente_id,nota,comentario,criada_em) VALUES (?,?,?,?,?,?,?)",
+                      (novo_id(), pedido_id, p["empresa_id"], p["cliente_id"], n, texto(comentario, 500), self.agora()))
+            self.avisar(f"A empresa avaliou sua compra #{p['numero']}: {'★' * n}{'☆' * (5 - n)}.",
+                        usuario_id=p["cliente_id"], link=f"/#pedido/{pedido_id}", conn=c)
+        self.auditar(ator, "avaliacao_cliente.criar", pedido_id, {"nota": n}, empresa_id=p["empresa_id"])
+        return {"ok": True}
+
+    def listar_avaliacoes_clientes(self, ator: Ator, empresa_id: str | None = None) -> dict:
+        ator.exigir("pedidos", "ver")
+        if ator.plataforma and not empresa_id:
+            cond, par = "", ()
+        else:
+            cond, par = " WHERE a.empresa_id=?", (ator.empresa_alvo(empresa_id),)
+        itens = self.banco.todos(f"""SELECT a.*, e.nome AS loja, p.numero, u.nome AS cliente
+                                     FROM avaliacoes_clientes a JOIN empresas e ON e.id=a.empresa_id
+                                     JOIN pedidos p ON p.id=a.pedido_id JOIN usuarios u ON u.id=a.cliente_id
+                                     {cond} ORDER BY a.criada_em DESC LIMIT 200""", par)
+        media = round(sum(a["nota"] for a in itens) / len(itens), 1) if itens else None
+        return {"itens": itens, "media": media, "total": len(itens)}
+
+    def minha_reputacao(self, ator: Ator) -> dict:
+        if ator.papel != "cliente":
+            raise SemPermissao("Esta área é só para contas de cliente.")
+        a = self.banco.um("SELECT AVG(nota) AS media, COUNT(*) AS total FROM avaliacoes_clientes WHERE cliente_id=?", (ator.usuario_id,)) or {}
+        p = self.banco.um("SELECT COALESCE(SUM(pontos),0) AS pontos FROM pontos_fidelidade WHERE cliente_id=?", (ator.usuario_id,)) or {}
+        itens = self.banco.todos("""SELECT a.nota, a.comentario, a.criada_em, e.nome AS loja, ped.numero
+                                   FROM avaliacoes_clientes a JOIN empresas e ON e.id=a.empresa_id
+                                   JOIN pedidos ped ON ped.id=a.pedido_id WHERE a.cliente_id=?
+                                   ORDER BY a.criada_em DESC LIMIT 50""", (ator.usuario_id,))
+        return {"media": round(a["media"], 1) if a.get("media") is not None else None,
+                "total": a.get("total", 0), "pontos": p.get("pontos", 0), "itens": itens}
 
     def responder_avaliacao(self, ator: Ator, avaliacao_id: str, resposta: str) -> dict:
         ator.exigir("pedidos", "operar")
@@ -418,6 +465,8 @@ class ExtrasMixin:
 
     def marcar_fatura_paga(self, ator: Ator, fatura_id: str, referencia: str) -> dict:
         ator.exigir("financeiro", "repassar")
+        if not ator.plataforma:
+            raise SemPermissao("Só a equipe Sobrou+ confirma o pagamento da mensalidade.")
         f = ator.conferir_empresa(self.banco.um("SELECT * FROM faturas WHERE id=?", (fatura_id,)), "Fatura")
         if f["status"] == "paga":
             raise ErroNegocio("Esta fatura já está paga.")

@@ -1,8 +1,8 @@
 /* Sobrou+ — service worker: app instalável, atualização automática e aviso no celular. */
-const CACHE = "sobrou-v1";
+const CACHE = "sobrou-v6-click-link-20261008";
 const BASE = self.registration.scope;               // ex.: https://…/sobrou/
 const ESSENCIAIS = ["", "painel", "entregador", "static/css/sobrou.css", "static/css/app.css", "static/css/painel.css",
-  "static/js/comum.js", "static/js/app.js", "static/js/painel.js", "static/js/entregador.js", "static/js/qrcode.js",
+  "static/js/comum.js", "static/js/app.js", "static/js/painel.js", "static/js/painel2.js", "static/js/entregador.js", "static/js/qrcode.js",
   "static/vendor/leaflet/leaflet.js", "static/vendor/leaflet/leaflet.css", "static/img/logo.png", "static/img/logo-marca-clara.png"];
 
 self.addEventListener("install", (e) => {

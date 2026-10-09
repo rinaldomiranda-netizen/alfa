@@ -27,11 +27,28 @@ class PrecisaCodigo(NaoAutenticado):
 class AcessoMixin:
     # ================================================================ DESENVOLVEDOR RMD
     def definir_dono(self, email: str) -> dict:
-        """O Desenvolvedor entra só com a senha. Senha inicial padrão, SEM troca obrigatória (pode trocar em Configurações)."""
-        u = self.garantir_admin_sobrou(email, "Desenvolvedor RMD")
-        self.banco.executar("UPDATE usuarios SET trocar_senha=0, papel='admin_sobrou', ativo=1 WHERE id=?", (u["id"],))
+        """Configura o proprietário; a instalação nova usa a senha inicial padrão 1234, sem troca obrigatória."""
+        existente = self.banco.um("SELECT * FROM usuarios WHERE email=?", ((email or "").strip().lower(),))
+        senha_inicial = None
+        if existente:
+            u = existente
+            senha_padrao = seguranca.conferir_senha("1234", u["senha_salt"], u["senha_hash"], int(u.get("senha_iteracoes") or 200_000))
+            if u["trocar_senha"] and not senha_padrao:
+                # Migração única da instalação antiga: a senha inicial volta ao padrão
+                # e a troca deixa de ser obrigatória. Depois disso, a senha só muda
+                # pela função normal "Trocar senha" escolhida pelo próprio usuário.
+                self.redefinir_senha(Ator(u["id"], u["papel"], u["nome"], u["empresa_id"]), u["id"])
+                self.banco.executar("UPDATE usuarios SET trocar_senha=0 WHERE id=?", (u["id"],))
+                u = self.banco.um("SELECT * FROM usuarios WHERE id=?", (u["id"],))
+            self.banco.executar("UPDATE usuarios SET trocar_senha=?, papel='admin_sobrou', ativo=1 WHERE id=?",
+                                (0 if senha_padrao or u["trocar_senha"] == 0 else 1, u["id"]))
+        else:
+            # _inserir_usuario usa a senha inicial padrão quando senha=None.
+            # Para o proprietário, ela não exige troca automática.
+            u = self._inserir_usuario("Desenvolvedor RMD", email, "admin_sobrou", None, trocar=False)
+            senha_inicial = None
         self.banco.executar("INSERT INTO config(chave, valor) VALUES ('dono_id', ?) ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor", (u["id"],))
-        return u
+        return {**u, "senha_inicial_unica": senha_inicial}
 
     def id_dono(self) -> str | None:
         r = self.banco.um("SELECT valor FROM config WHERE chave='dono_id'")
@@ -44,14 +61,20 @@ class AcessoMixin:
         return self.entrar(dono["email"], senha, ip, codigo)
 
     def senha_padrao(self, ator: Ator) -> bool:
-        u = self.banco.um("SELECT senha_hash, senha_salt FROM usuarios WHERE id=?", (ator.usuario_id,))
-        return bool(u) and seguranca.conferir_senha("1234", u["senha_salt"], u["senha_hash"])
+        u = self.banco.um("SELECT senha_hash, senha_salt, senha_iteracoes FROM usuarios WHERE id=?", (ator.usuario_id,))
+        return bool(u) and seguranca.conferir_senha("1234", u["senha_salt"], u["senha_hash"], int(u.get("senha_iteracoes") or 200_000))
 
     # ---------------------------------------------------------------- verificação em 2 etapas (aplicativo autenticador)
     def iniciar_2fa(self, ator: Ator) -> dict:
-        segredo = seguranca.gerar_segredo_totp()
-        self.banco.executar("INSERT INTO config(chave, valor) VALUES (?,?) ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor",
-                            ("2fa_pendente:" + ator.usuario_id, segredo))
+        # Durante a configuração, não troque o segredo a cada abertura da tela.
+        # Se o usuário atualizar a página ou fechar/reabrir o autenticador, o código
+        # mostrado continua correspondendo ao mesmo segredo pendente.
+        chave = "2fa_pendente:" + ator.usuario_id
+        existente = self.banco.um("SELECT valor FROM config WHERE chave=?", (chave,))
+        segredo = existente["valor"] if existente and existente["valor"] else seguranca.gerar_segredo_totp()
+        if not existente or not existente["valor"]:
+            self.banco.executar("INSERT INTO config(chave, valor) VALUES (?,?) ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor",
+                                (chave, segredo))
         email = ator.extras.get("email") or "desenvolvedor-rmd"
         return {"segredo": segredo, "endereco": seguranca.endereco_totp(segredo, email, "Sobrou+")}
 
@@ -69,7 +92,7 @@ class AcessoMixin:
 
     def desligar_2fa(self, ator: Ator, senha: str) -> dict:
         u = self.banco.um("SELECT * FROM usuarios WHERE id=?", (ator.usuario_id,))
-        if not seguranca.conferir_senha(senha or "", u["senha_salt"], u["senha_hash"]):
+        if not seguranca.conferir_senha(senha or "", u["senha_salt"], u["senha_hash"], int(u.get("senha_iteracoes") or 200_000)):
             raise ErroNegocio("Senha incorreta.")
         self.banco.executar("UPDATE usuarios SET totp_segredo=NULL, totp_ultimo=NULL WHERE id=?", (ator.usuario_id,))
         self.auditar(ator, "seguranca.2fa_desligar", ator.usuario_id, empresa_id=ator.empresa_id)
@@ -131,8 +154,8 @@ class AcessoMixin:
         except seguranca.SenhaFraca as e:
             raise ErroNegocio(str(e)) from e
         salt = seguranca.gerar_salt()
-        self.banco.executar("UPDATE usuarios SET senha_hash=?, senha_salt=?, trocar_senha=0, tentativas_falhas=0, bloqueado_ate=NULL WHERE id=?",
-                            (seguranca.hash_senha(senha, salt), salt, u["id"]))
+        self.banco.executar("UPDATE usuarios SET senha_hash=?, senha_salt=?, senha_iteracoes=?, trocar_senha=0, tentativas_falhas=0, bloqueado_ate=NULL WHERE id=?",
+                            (seguranca.hash_senha(senha, salt), salt, seguranca.ITERACOES, u["id"]))
         self.banco.executar("UPDATE convites SET usado_em=? WHERE id=?", (self.agora(), c["id"]))
         self.registrar_aceite(u["id"])
         self.auditar(Ator(u["id"], u["papel"], u["nome"], u["empresa_id"], ip=ip), "usuario.convite_aceito", u["id"], empresa_id=u["empresa_id"])
