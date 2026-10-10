@@ -378,17 +378,18 @@ class NucleoMixin:
             self.banco.executar("UPDATE usuarios SET tentativas_falhas=?, bloqueado_ate=? WHERE id=?", (falhas, ate, usuario["id"]))
             self.auditar(None, "login.falha", usuario["id"], {"falhas": falhas}, ip=ip, empresa_id=usuario["empresa_id"])
             raise NaoAutenticado(mensagem_generica)
+        # Verificação em duas etapas: só para quem LIGOU na tela Segurança. Senha certa sem o código não abre sessão.
         if usuario["totp_ativo"]:
-            if not str(codigo or "").strip():
-                raise PrecisaCodigo("Digite o código de 6 números do aplicativo autenticador do seu celular.")
+            if not (codigo or "").strip():
+                raise PrecisaCodigo("Digite o código de 6 números do aplicativo do seu celular.")
             aceito = seguranca.conferir_totp(usuario["totp_segredo"], codigo, usuario["totp_ultimo"])
             if aceito is None:
                 falhas = usuario["tentativas_falhas"] + 1
                 duracao = seguranca.duracao_bloqueio(falhas)
                 ate = (datetime.now(timezone.utc) + timedelta(seconds=duracao)).isoformat(timespec="seconds") if duracao else None
                 self.banco.executar("UPDATE usuarios SET tentativas_falhas=?, bloqueado_ate=? WHERE id=?", (falhas, ate, usuario["id"]))
-                self.auditar(None, "login.falha", usuario["id"], {"falhas": falhas, "motivo": "codigo"}, ip=ip, empresa_id=usuario["empresa_id"])
-                raise PrecisaCodigo("Código incorreto ou vencido. Use o código que está aparecendo agora no aplicativo.")
+                self.auditar(None, "login.falha", usuario["id"], {"motivo": "codigo", "falhas": falhas}, ip=ip, empresa_id=usuario["empresa_id"])
+                raise PrecisaCodigo("Código incorreto ou já usado. Digite o código que aparece agora no celular.")
             self.banco.executar("UPDATE usuarios SET totp_ultimo=? WHERE id=?", (aceito, usuario["id"]))
         self.banco.executar("UPDATE usuarios SET tentativas_falhas=0, bloqueado_ate=NULL WHERE id=?", (usuario["id"],))
         return self._abrir_sessao(usuario, usuario["empresa_id"], ip, navegador, "login")

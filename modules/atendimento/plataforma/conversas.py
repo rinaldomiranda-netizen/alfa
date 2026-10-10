@@ -80,14 +80,19 @@ class ConversasMixin:
         if tag:
             sql += " AND tags LIKE ?"
             parametros.append(f'%"{tag}"%')
+        limite = max(1, min(limite, 1000))
+        restrito = self._escopo_cache(ator) is not None  # parte da igreja (não é a Sede): filtra pela hierarquia
         sql += " ORDER BY COALESCE(ultimo_contato, criado_em) DESC LIMIT ?"
-        parametros.append(max(1, min(limite, 1000)))
-        return [self._contato_publico(c) for c in self.banco.todos(sql, parametros)]
+        parametros.append(5000 if restrito else limite)
+        linhas = self.banco.todos(sql, parametros)
+        if restrito:
+            linhas = [c for c in linhas if self._contato_no_alcance(ator, c)][:limite]
+        return [self._contato_publico(c) for c in linhas]
 
     def obter_contato(self, ator: Ator, contato_id: str) -> dict:
         ator.exigir("contatos", "ver")
         contato = self.banco.um("SELECT * FROM contatos WHERE id=? AND empresa_id=?", (contato_id, ator.empresa))
-        if not contato:
+        if not contato or not self._contato_no_alcance(ator, contato):
             raise NaoEncontrado("Nome não encontrado.")
         historico = self.banco.todos(
             "SELECT id, numero, canal, status, criada_em, resolvida_em, avaliacao FROM conversas WHERE contato_id=? ORDER BY criada_em DESC LIMIT 50",
@@ -109,11 +114,12 @@ class ConversasMixin:
                 "SELECT 1 AS x FROM contatos WHERE empresa_id=? AND whatsapp=?", (empresa_id, valores["whatsapp"])):
             raise ErroNegocio("Já existe um nome cadastrado com esse telefone/WhatsApp.")
         contato_id = novo_id()
+        unidade = self._unidade_do_lancamento(ator) if ator is not None else None
         self.banco.executar(
-            """INSERT INTO contatos(id, empresa_id, nome, telefone, whatsapp, email, tags, observacoes, status, criado_em)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO contatos(id, empresa_id, nome, telefone, whatsapp, email, tags, observacoes, status, criado_em, unidade_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (contato_id, empresa_id, valores["nome"], valores["telefone"], valores["whatsapp"], valores["email"],
-             valores["tags"], valores["observacoes"], valores["status"], agora()),
+             valores["tags"], valores["observacoes"], valores["status"], agora(), unidade),
         )
         self.auditar(ator, "contato.criar", contato_id, empresa_id=empresa_id)
         self._verificar_limite_nomes(empresa_id)
@@ -195,7 +201,7 @@ class ConversasMixin:
 
     def equipe(self, ator: Ator) -> list[dict]:
         ator.exigir("filas", "ver")
-        return self.banco.todos(
+        linhas = self.banco.todos(
             """SELECT u.id, u.nome, u.perfil, u.presenca, u.fila_id, f.nome AS fila_nome,
                  (SELECT COUNT(*) FROM conversas c WHERE c.responsavel_id=u.id AND c.status='em_atendimento') AS em_atendimento
                FROM usuarios u LEFT JOIN filas f ON f.id=u.fila_id
@@ -203,6 +209,7 @@ class ConversasMixin:
                ORDER BY CASE u.presenca WHEN 'online' THEN 0 WHEN 'ausente' THEN 1 ELSE 2 END, u.nome""",
             (ator.empresa,),
         )
+        return [u for u in linhas if self._usuario_no_alcance(ator, u["id"])]
 
     def _fila_padrao(self, empresa_id: str) -> dict | None:
         return self.banco.um("SELECT * FROM filas WHERE empresa_id=? AND ativa=1 ORDER BY criada_em LIMIT 1", (empresa_id,))

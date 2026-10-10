@@ -174,7 +174,10 @@ class GestaoMixin:
         self.gerar_alertas(empresa_id)
         hoje = self._inicio_periodo(empresa_id, 1)
         ontem = self._inicio_periodo(empresa_id, 2)
-        contar = lambda sql, p: (self.banco.um(sql, p) or {}).get("n") or 0  # noqa: E731
+        fc, pc = self._filtro_conversas_alcance(ator, "id")  # parte da igreja: só os números da sua parte
+
+        def contar(sql, p):
+            return (self.banco.um(sql + fc, (*p, *pc)) or {}).get("n") or 0
         hoje_n = contar("SELECT COUNT(*) AS n FROM conversas WHERE empresa_id=? AND criada_em>=?", (empresa_id, hoje))
         ontem_n = contar("SELECT COUNT(*) AS n FROM conversas WHERE empresa_id=? AND criada_em>=? AND criada_em<?", (empresa_id, ontem, hoje))
         em_atendimento = contar("SELECT COUNT(*) AS n FROM conversas WHERE empresa_id=? AND status='em_atendimento'", (empresa_id,))
@@ -187,16 +190,22 @@ class GestaoMixin:
             if fim:
                 sql += " AND primeira_resposta_em<?"
                 parametros.append(fim)
-            linha = self.banco.um(sql, parametros) or {}
+            linha = self.banco.um(sql + fc, (*parametros, *pc)) or {}
             return round(100 * (linha.get("ok") or 0) / linha["total"]) if linha.get("total") else None
 
         sla_7 = sla(self._inicio_periodo(empresa_id, 7))
         sla_ant = sla(self._inicio_periodo(empresa_id, 14), self._inicio_periodo(empresa_id, 7))
         limite = (date.today() + timedelta(days=2)).isoformat()
-        orc = self.banco.um(
-            "SELECT COUNT(*) AS abertos, SUM(CASE WHEN validade<=? THEN 1 ELSE 0 END) AS vencendo FROM orcamentos WHERE empresa_id=? AND status IN ('enviado','em_analise') AND validade>=?",
-            (limite, empresa_id, date.today().isoformat()),
-        ) or {}
+        if fc:
+            abertos = [o for o in self.banco.todos(
+                "SELECT * FROM orcamentos WHERE empresa_id=? AND status IN ('enviado','em_analise') AND validade>=?",
+                (empresa_id, date.today().isoformat())) if self._orcamento_no_alcance(ator, o)]
+            orc = {"abertos": len(abertos), "vencendo": sum(1 for o in abertos if o["validade"] <= limite)}
+        else:
+            orc = self.banco.um(
+                "SELECT COUNT(*) AS abertos, SUM(CASE WHEN validade<=? THEN 1 ELSE 0 END) AS vencendo FROM orcamentos WHERE empresa_id=? AND status IN ('enviado','em_analise') AND validade>=?",
+                (limite, empresa_id, date.today().isoformat()),
+            ) or {}
 
         def csat(inicio, fim=None):
             sql = "SELECT AVG(avaliacao) AS m, COUNT(avaliacao) AS n FROM conversas WHERE empresa_id=? AND avaliacao IS NOT NULL AND resolvida_em>=?"
@@ -204,7 +213,7 @@ class GestaoMixin:
             if fim:
                 sql += " AND resolvida_em<?"
                 parametros.append(fim)
-            linha = self.banco.um(sql, parametros) or {}
+            linha = self.banco.um(sql + fc, (*parametros, *pc)) or {}
             return round(linha["m"], 1) if linha.get("n") else None
 
         csat_30 = csat(self._inicio_periodo(empresa_id, 30))
@@ -225,25 +234,46 @@ class GestaoMixin:
             "recentes": recentes, "fila_prioridade": fila[:6], "alertas_nao_lidos": self.contar_alertas(empresa_id, ator),
         }
 
+    def _filtro_conversas_alcance(self, ator: Ator, coluna: str) -> tuple[str, list]:
+        """Filtro SQL das conversas que a pessoa pode contar (vazio = Sede, vê tudo)."""
+        ids = self._conversas_no_alcance(ator)
+        if ids is None:
+            return "", []
+        if not ids:
+            return " AND 1=0", []
+        return f" AND {coluna} IN ({','.join('?' * len(ids))})", ids
+
     # ================================================================ RELATÓRIOS
     def relatorio(self, ator: Ator, dias: int = 30) -> dict:
         ator.exigir("relatorios", "ver")
         dias = dias if dias in (1, 7, 30, 90, 365) else 30
         empresa_id = ator.empresa
         inicio = self._inicio_periodo(empresa_id, dias)
+        fc, pc = self._filtro_conversas_alcance(ator, "id")  # parte da igreja: relatório só da sua parte
+        fcc, _ = self._filtro_conversas_alcance(ator, "c.id")
+        fm, _ = self._filtro_conversas_alcance(ator, "conversa_id")
         base = self.banco.um(
             """SELECT COUNT(*) AS total,
                  SUM(CASE WHEN status='resolvido' THEN 1 ELSE 0 END) AS resolvidos,
                  AVG(CASE WHEN primeira_resposta_em IS NOT NULL THEN (julianday(primeira_resposta_em)-julianday(criada_em))*86400 END) AS primeira,
                  AVG(avaliacao) AS csat, COUNT(avaliacao) AS avaliacoes
-               FROM conversas WHERE empresa_id=? AND criada_em>=?""",
-            (empresa_id, inicio),
+               FROM conversas WHERE empresa_id=? AND criada_em>=?""" + fc,
+            (empresa_id, inicio, *pc),
         ) or {}
-        mensagens = self.banco.um("SELECT COUNT(*) AS n FROM mensagens WHERE empresa_id=? AND criada_em>=?", (empresa_id, inicio))["n"]
-        orc = self.banco.todos(
-            "SELECT status, COUNT(*) AS quantidade, SUM(total_centavos) AS valor FROM orcamentos WHERE empresa_id=? AND criado_em>=? GROUP BY status",
-            (empresa_id, inicio),
-        )
+        mensagens = self.banco.um("SELECT COUNT(*) AS n FROM mensagens WHERE empresa_id=? AND criada_em>=?" + fm, (empresa_id, inicio, *pc))["n"]
+        if fc:
+            grupos: dict = {}
+            for o in self.banco.todos("SELECT * FROM orcamentos WHERE empresa_id=? AND criado_em>=?", (empresa_id, inicio)):
+                if self._orcamento_no_alcance(ator, o):
+                    g = grupos.setdefault(o["status"], {"status": o["status"], "quantidade": 0, "valor": 0})
+                    g["quantidade"] += 1
+                    g["valor"] += o["total_centavos"] or 0
+            orc = list(grupos.values())
+        else:
+            orc = self.banco.todos(
+                "SELECT status, COUNT(*) AS quantidade, SUM(total_centavos) AS valor FROM orcamentos WHERE empresa_id=? AND criado_em>=? GROUP BY status",
+                (empresa_id, inicio),
+            )
         decididos = {o["status"]: o["quantidade"] for o in orc}
         enviados = sum(decididos.get(s, 0) for s in ("enviado", "em_analise", "aprovado", "recusado", "vencido"))
         conversao = round(100 * decididos.get("aprovado", 0) / enviados) if enviados else None
@@ -253,16 +283,16 @@ class GestaoMixin:
                  AVG(CASE WHEN c.primeira_resposta_em IS NOT NULL THEN (julianday(c.primeira_resposta_em)-julianday(c.criada_em))*86400 END) AS primeira,
                  AVG(c.avaliacao) AS csat
                FROM conversas c JOIN usuarios u ON u.id=c.responsavel_id
-               WHERE c.empresa_id=? AND c.criada_em>=? GROUP BY u.id ORDER BY atendimentos DESC""",
-            (empresa_id, inicio),
+               WHERE c.empresa_id=? AND c.criada_em>=?""" + fcc + """ GROUP BY u.id ORDER BY atendimentos DESC""",
+            (empresa_id, inicio, *pc),
         )
         canais = self.banco.todos(
-            "SELECT canal, COUNT(*) AS atendimentos, SUM(CASE WHEN status='resolvido' THEN 1 ELSE 0 END) AS resolvidos FROM conversas WHERE empresa_id=? AND criada_em>=? GROUP BY canal",
-            (empresa_id, inicio),
+            "SELECT canal, COUNT(*) AS atendimentos, SUM(CASE WHEN status='resolvido' THEN 1 ELSE 0 END) AS resolvidos FROM conversas WHERE empresa_id=? AND criada_em>=?" + fc + " GROUP BY canal",
+            (empresa_id, inicio, *pc),
         )
         notas = {n["avaliacao"]: n["quantidade"] for n in self.banco.todos(
-            "SELECT avaliacao, COUNT(*) AS quantidade FROM conversas WHERE empresa_id=? AND avaliacao IS NOT NULL AND criada_em>=? GROUP BY avaliacao",
-            (empresa_id, inicio))}
+            "SELECT avaliacao, COUNT(*) AS quantidade FROM conversas WHERE empresa_id=? AND avaliacao IS NOT NULL AND criada_em>=?" + fc + " GROUP BY avaliacao",
+            (empresa_id, inicio, *pc))}
         for linha in equipe:
             linha["tempo_primeira_resposta"] = _minutos_segundos(linha.pop("primeira"))
             linha["csat"] = round(linha["csat"], 1) if linha["csat"] else None

@@ -1,0 +1,152 @@
+"""Porteiro: um único endereço público (porta do Railway) para dois sistemas separados no mesmo serviço.
+
+- caminho /sobrou/…  →  Sobrou+ (processo próprio, banco em /dados/sobrou); o prefixo é tirado e avisado em X-Forwarded-Prefix
+- caminho /pesquisas/… →  Central de Pesquisas (só arquivos da tela; os dados ficam no Supabase central-pesquisas)
+- todo o resto       →  RMD Atendimento (exatamente como antes)
+
+Cada sistema roda no seu próprio processo e com os seus próprios dados; o porteiro só encaminha a conversa.
+Só é usado quando o comando de início do serviço chama este arquivo (serviço rmd-atendimento-web).
+"""
+from __future__ import annotations
+
+import http.client
+import os
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+RAIZ = Path(__file__).resolve().parent.parent
+PORTA_ATENDIMENTO = 8081
+PORTA_SOBROU = 8082
+PREFIXO = "/sobrou"
+PREFIXO_PESQUISAS = "/pesquisas"
+PASTA_PESQUISAS = RAIZ / "modules" / "central_pesquisas"
+ARQUIVOS_PESQUISAS = {"": ("index.html", "text/html; charset=utf-8"), "index.html": ("index.html", "text/html; charset=utf-8"),
+                      "aparencia.css": ("aparencia.css", "text/css; charset=utf-8"), "aparencia.js": ("aparencia.js", "application/javascript; charset=utf-8")}
+SEM_REPASSE = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers",
+               "transfer-encoding", "upgrade", "content-length", "x-forwarded-prefix"}
+
+
+def _ambiente(extra: dict) -> dict:
+    env = {k: v for k, v in os.environ.items() if k != "PORT"}
+    env.update(extra)
+    return env
+
+
+PROCESSOS = {
+    "atendimento": ([sys.executable, "atendimento_web/app.py", "--host", "127.0.0.1", "--porta", str(PORTA_ATENDIMENTO)], {}),
+    "sobrou": ([sys.executable, "modules/sobrouplus/web/app.py"],
+               {"PORT": str(PORTA_SOBROU), "SOBROU_HOST": "127.0.0.1", "SOBROU_ATRAS_DE_PROXY": "1",
+                "SOBROU_DADOS": os.getenv("SOBROU_DADOS", str(RAIZ / "modules" / "sobrouplus" / "data"))}),
+}
+_vivos: dict[str, subprocess.Popen] = {}
+
+
+def _manter_vivos():
+    while True:
+        for nome, (cmd, extra) in PROCESSOS.items():
+            p = _vivos.get(nome)
+            if p is None or p.poll() is not None:
+                if p is not None:
+                    print(f"[porteiro] {nome} parou (código {p.returncode}); reiniciando", flush=True)
+                _vivos[nome] = subprocess.Popen(cmd, cwd=str(RAIZ), env=_ambiente(extra))
+        time.sleep(3)
+
+
+class Porteiro(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    server_version = "RMD"
+    sys_version = ""
+
+    def log_message(self, *a):
+        pass
+
+    def _pesquisas(self, caminho: str):
+        """Entrega só as telas da Central de Pesquisas (lista fechada: nenhum outro arquivo do servidor sai por aqui)."""
+        nome = caminho[len(PREFIXO_PESQUISAS) + 1:].split("?", 1)[0].split("#", 1)[0]
+        item = ARQUIVOS_PESQUISAS.get(nome)
+        arquivo = PASTA_PESQUISAS / item[0] if item else None
+        if self.command not in ("GET", "HEAD") or not arquivo or not arquivo.is_file():
+            dados, status, tipo = "Não encontrado.".encode(), 404, "text/plain; charset=utf-8"
+        else:
+            dados, status, tipo = arquivo.read_bytes(), 200, item[1]
+        self.send_response(status)
+        self.send_header("Content-Type", tipo)
+        self.send_header("Content-Length", str(len(dados)))
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        self.send_header("Strict-Transport-Security", "max-age=31536000")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(dados)
+
+    def _encaminhar(self):
+        caminho = self.path
+        if caminho == PREFIXO_PESQUISAS or caminho.startswith(PREFIXO_PESQUISAS + "?"):
+            self.send_response(301)
+            self.send_header("Location", PREFIXO_PESQUISAS + "/" + caminho[len(PREFIXO_PESQUISAS):])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if caminho.startswith(PREFIXO_PESQUISAS + "/"):
+            return self._pesquisas(caminho)
+        if caminho == PREFIXO or caminho.startswith(PREFIXO + "?"):
+            self.send_response(301)
+            self.send_header("Location", PREFIXO + "/" + caminho[len(PREFIXO):])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if caminho.startswith(PREFIXO + "/"):
+            porta, caminho = PORTA_SOBROU, caminho[len(PREFIXO):]
+        else:
+            porta = PORTA_ATENDIMENTO
+        tam = int(self.headers.get("Content-Length") or 0)
+        corpo = self.rfile.read(tam) if tam else None
+        cab = {k: v for k, v in self.headers.items() if k.lower() not in SEM_REPASSE}
+        if not self.headers.get("X-Forwarded-For"):
+            cab["X-Forwarded-For"] = self.client_address[0]
+        if corpo is not None:
+            cab["Content-Length"] = str(len(corpo))
+        if porta == PORTA_SOBROU:
+            cab["X-Forwarded-Prefix"] = PREFIXO
+        for tentativa in range(20):
+            try:
+                c = http.client.HTTPConnection("127.0.0.1", porta, timeout=60)
+                c.request(self.command, caminho, body=corpo, headers=cab)
+                r = c.getresponse()
+                dados = r.read()
+                self.send_response(r.status, r.reason)
+                for k, v in r.getheaders():
+                    if k.lower() not in SEM_REPASSE:
+                        self.send_header(k, v)
+                self.send_header("Content-Length", str(len(dados)))
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(dados)
+                c.close()
+                return
+            except (ConnectionRefusedError, ConnectionResetError, http.client.RemoteDisconnected):
+                time.sleep(0.5)  # o sistema ainda está subindo (ou reiniciando)
+        msg = b"Sistema iniciando. Tente de novo em alguns segundos."
+        self.send_response(503)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(msg)))
+        self.send_header("Retry-After", "5")
+        self.end_headers()
+        self.wfile.write(msg)
+
+    do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _encaminhar
+
+
+if __name__ == "__main__":
+    threading.Thread(target=_manter_vivos, daemon=True, name="Porteiro-processos").start()
+    porta = int(os.getenv("PORT", "8080"))
+    servidor = ThreadingHTTPServer(("0.0.0.0", porta), Porteiro)
+    servidor.daemon_threads = True
+    print(f"[porteiro] porta {porta}: Atendimento → {PORTA_ATENDIMENTO} · Sobrou+ (/sobrou) → {PORTA_SOBROU} · Central de Pesquisas (/pesquisas)", flush=True)
+    servidor.serve_forever()

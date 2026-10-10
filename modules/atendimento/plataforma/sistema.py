@@ -112,6 +112,11 @@ class SistemaMixin:
         self.obter_empresa(empresa_id)
         if not (email or "").strip():
             raise ErroNegocio("Informe o e-mail da Administração da Sede.")
+        if ator.perfil == "owner" and self.banco.um(
+                "SELECT 1 AS x FROM usuarios WHERE empresa_id=? AND perfil='admin' AND ativo=1 LIMIT 1", (empresa_id,)):
+            # Proteção de dados: o RMD Desenvolvedor só abre a PRIMEIRA conta da Sede. Depois disso, novas contas
+            # são criadas pela própria Administração da Sede (senão ele poderia criar uma conta e entrar nos dados).
+            raise ErroNegocio("Esta Sede já tem Administração. Novas contas são criadas pela própria Administração da Sede.")
         usuario, _temporaria = self.criar_usuario(None, nome or "Administração da Sede", email, "admin", empresa_id=empresa_id)
         salt = seguranca.gerar_salt()
         self.banco.executar("UPDATE usuarios SET senha_hash=?, senha_salt=?, trocar_senha=1 WHERE id=?",

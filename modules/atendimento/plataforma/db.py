@@ -440,6 +440,11 @@ ESQUEMA = [
     );
     CREATE INDEX IF NOT EXISTS ix_erros_quando ON erros_sistema(quando);
     """,
+    # 6 — RMD Atendimento Church: nomes e agendamentos também ficam na igreja/setor de quem cadastrou (hierarquia).
+    """
+    ALTER TABLE contatos ADD COLUMN unidade_id TEXT;
+    ALTER TABLE agenda ADD COLUMN unidade_id TEXT;
+    """,
 ]
 
 PLANOS_PADRAO = (

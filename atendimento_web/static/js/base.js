@@ -327,14 +327,9 @@ function montarLogin(primeiroAcesso) {
       campo("Senha", entrada("senha", "", { type: "password", required: true, autocomplete: "new-password" }), "Mínimo 8 caracteres, com letras e números."),
       erro, h("button", { class: "btn primario", type: "submit", text: "Criar e entrar" }));
   } else {
-    const campoCodigo = campo("Código do celular (6 números)", entrada("codigo", "", { inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", pattern: "[0-9 ]*" }),
-      "Abra o aplicativo autenticador no celular e digite o código que aparece para esta conta.");
-    campoCodigo.hidden = true;
-    campoCodigo.classList.add("campo-codigo-2fa");
     form = h("form", null,
       campo("E-mail", entrada("email", "", { type: "email", required: true, autocomplete: "username" })),
       campo("Senha", entrada("senha", "", { type: "password", required: true, autocomplete: "current-password" })),
-      campoCodigo,
       erro, h("button", { class: "btn primario", type: "submit", text: "Entrar" }));
   }
   form.addEventListener("submit", async (e) => {
@@ -345,12 +340,12 @@ function montarLogin(primeiroAcesso) {
       depoisDoLogin();
     } catch (x) {
       erro.textContent = x.message;
-      const bloco = form.querySelector(".campo-codigo-2fa");
-      if (x.corpo && x.corpo.precisa_codigo && bloco) {
-        const primeiraVez = bloco.hidden;
-        bloco.hidden = false;
-        const c = bloco.querySelector("input"); c.required = true; c.focus();
-        if (primeiraVez) erro.textContent = "Falta só o código do celular: " + x.message.charAt(0).toLowerCase() + x.message.slice(1);
+      // conta com verificação em duas etapas: pede o código de 6 números do aplicativo do celular
+      if (x.corpo && x.corpo.precisa_codigo && !form.querySelector('[name="codigo"]')) {
+        const caixa = campo("Código do celular (6 números)", entrada("codigo", "", { inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", required: true }),
+          "Abra o aplicativo autenticador do celular e digite o código que aparece agora.");
+        form.insertBefore(caixa, erro);
+        const c = form.querySelector('[name="codigo"]'); if (c) c.focus();
       }
     }
   });

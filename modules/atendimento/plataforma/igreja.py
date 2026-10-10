@@ -172,6 +172,70 @@ class IgrejaMixin:
                 saida.append(a)
         return saida
 
+    # ---------------------------------------------------------------- escopo nas telas comuns (Nomes, Agenda, Solicitações, Equipe, Relatórios)
+    # Regra da hierarquia: a Sede (Administração) vê tudo; quem é lotado num setor/campo/igreja vê só a sua parte
+    # (e o que fica abaixo dela). O que não tem igreja definida é da Sede e não aparece para as partes.
+    def _no_alcance(self, ator: Ator, unidade: str | None) -> bool:
+        escopo = self._escopo_cache(ator)
+        return escopo is TODA_A_SEDE or (unidade in escopo if unidade else not escopo)
+
+    def _unidade_do_lancamento(self, ator: Ator) -> str | None:
+        """Igreja/setor em que fica o que esta pessoa cadastra (None = Sede)."""
+        if ator.perfil in ("owner", "admin"):
+            return None
+        lot = self._lotacao(ator)
+        return lot["unidade_id"] if lot else None
+
+    def _unidade_contato(self, empresa_id: str, contato_id: str | None) -> str | None:
+        if not contato_id:
+            return None
+        linha = self.banco.um("SELECT unidade_id FROM contatos WHERE id=? AND empresa_id=?", (contato_id, empresa_id))
+        return (linha or {}).get("unidade_id") or self._unidade_do_contato(empresa_id, contato_id)
+
+    def _contato_no_alcance(self, ator: Ator, contato: dict | str | None) -> bool:
+        if ator.perfil == "cliente" or self._escopo_cache(ator) is TODA_A_SEDE:
+            return True
+        if not contato:
+            return False
+        contato_id = contato if isinstance(contato, str) else contato.get("id")
+        unidade = (None if isinstance(contato, str) else contato.get("unidade_id")) or self._unidade_contato(ator.empresa, contato_id)
+        if self._no_alcance(ator, unidade):
+            return True
+        # quem está atendendo a pessoa continua vendo o nome dela
+        return bool(self.banco.um("SELECT 1 AS x FROM conversas WHERE empresa_id=? AND contato_id=? AND responsavel_id=? LIMIT 1",
+                                  (ator.empresa, contato_id, ator.usuario_id)))
+
+    def _agenda_no_alcance(self, ator: Ator, item: dict) -> bool:
+        if self._escopo_cache(ator) is TODA_A_SEDE or item.get("responsavel_id") == ator.usuario_id:
+            return True
+        unidade = item.get("unidade_id")
+        if unidade:
+            return self._no_alcance(ator, unidade)
+        if item.get("contato_id"):
+            return self._contato_no_alcance(ator, item["contato_id"])
+        return self._no_alcance(ator, None)
+
+    def _orcamento_no_alcance(self, ator: Ator, orcamento: dict) -> bool:
+        if self._escopo_cache(ator) is TODA_A_SEDE or orcamento.get("criado_por") == ator.usuario_id:
+            return True
+        return self._contato_no_alcance(ator, orcamento.get("contato_id"))
+
+    def _usuario_no_alcance(self, ator: Ator, usuario_id: str) -> bool:
+        if self._escopo_cache(ator) is TODA_A_SEDE or usuario_id == ator.usuario_id:
+            return True
+        lot = self.banco.um("SELECT unidade_id FROM igreja_lotacoes WHERE usuario_id=? AND empresa_id=?", (usuario_id, ator.empresa))
+        usuario = self.banco.um("SELECT perfil FROM usuarios WHERE id=?", (usuario_id,))
+        if usuario and usuario["perfil"] in ("owner", "admin"):
+            return False  # a Administração da Sede não aparece para as partes
+        return self._no_alcance(ator, lot["unidade_id"] if lot else None)
+
+    def _conversas_no_alcance(self, ator: Ator) -> list[str] | None:
+        """Ids das conversas que a pessoa pode contar nos números (None = todas, Sede)."""
+        if self._escopo_cache(ator) is TODA_A_SEDE:
+            return None
+        linhas = self.banco.todos("SELECT id, empresa_id, contato_id, responsavel_id FROM conversas WHERE empresa_id=?", (ator.empresa,))
+        return [c["id"] for c in linhas if self._conversa_no_escopo_igreja(ator, c)]
+
     def _caminhos(self, unidades: list[dict]) -> dict[str, str]:
         por_id = {u["id"]: u for u in unidades}
         caminhos = {}
@@ -379,10 +443,11 @@ class IgrejaMixin:
         else:
             contato_id = dados.get("contato_id")
             if contato_id:
-                if not self.banco.um("SELECT 1 AS x FROM contatos WHERE id=? AND empresa_id=?", (contato_id, ator.empresa)):
+                if (not self.banco.um("SELECT 1 AS x FROM contatos WHERE id=? AND empresa_id=?", (contato_id, ator.empresa))
+                        or not self._contato_no_alcance(ator, contato_id)):
                     raise NaoEncontrado("Nome não encontrado.")
             else:
-                contato_id = self._contato_do_visitante(ator.empresa, dados)["id"]
+                contato_id = self._contato_do_visitante(ator.empresa, dados, ator)["id"]
             if self.banco.um("SELECT 1 AS x FROM igreja_jornada WHERE empresa_id=? AND contato_id=?", (ator.empresa, contato_id)):
                 raise ErroNegocio("Essa pessoa já está na consolidação.")
             jornada_id = self._nova_jornada(ator.empresa, contato_id, valores)
@@ -401,13 +466,16 @@ class IgrejaMixin:
             {"unidade_id": None, **valores, "id": jornada_id, "empresa": empresa_id, "contato": contato_id, "agora": agora()})
         return jornada_id
 
-    def _contato_do_visitante(self, empresa_id: str, dados: dict) -> dict:
+    def _contato_do_visitante(self, empresa_id: str, dados: dict, ator: Ator | None = None) -> dict:
         whatsapp = normalizar_telefone(dados.get("telefone"))
         contato = self.banco.um("SELECT * FROM contatos WHERE empresa_id=? AND whatsapp=?", (empresa_id, whatsapp)) if whatsapp else None
+        if contato and ator is not None and not self._contato_no_alcance(ator, contato):
+            # não revela os dados de quem é de outra parte da igreja
+            raise ErroNegocio("Esse telefone já está cadastrado em outra parte da igreja. Peça à Administração da Sede para transferir.")
         nascimento = _data(dados.get("nascimento"), "data de nascimento")
         if not contato:
             contato = self._criar_contato(empresa_id, {"nome": dados.get("nome"), "telefone": dados.get("telefone"),
-                                                        "email": dados.get("email"), "tags": ["visitante"]})
+                                                        "email": dados.get("email"), "tags": ["visitante"]}, ator)
         if nascimento or dados.get("bairro"):
             extras = json.loads(contato.get("dados") or "{}") if isinstance(contato.get("dados"), str) else dict(contato.get("dados") or {})
             if nascimento:

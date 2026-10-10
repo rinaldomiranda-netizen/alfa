@@ -102,7 +102,8 @@ class ComercialMixin:
         if busca:
             sql += " AND (c.nome LIKE ? OR CAST(o.numero AS TEXT) LIKE ?)"
             parametros += [f"%{busca}%", f"%{busca}%"]
-        linhas = [self._atualizar_vencimento(o) for o in self.banco.todos(sql + " ORDER BY o.numero DESC LIMIT 300", parametros)]
+        linhas = [self._atualizar_vencimento(o) for o in self.banco.todos(sql + " ORDER BY o.numero DESC LIMIT 300", parametros)
+                  if self._orcamento_no_alcance(ator, o)]
         if status:
             linhas = [o for o in linhas if o["status"] == status]
         return linhas
@@ -114,7 +115,8 @@ class ComercialMixin:
             "FROM orcamentos o JOIN contatos c ON c.id=o.contato_id WHERE o.id=? AND o.empresa_id=?",
             (orcamento_id, ator.empresa),
         )
-        if not orcamento or (portal and (orcamento["contato_id"] != ator.contato_id or orcamento["status"] == "rascunho")):
+        if not orcamento or (portal and (orcamento["contato_id"] != ator.contato_id or orcamento["status"] == "rascunho")) \
+                or (not portal and not self._orcamento_no_alcance(ator, orcamento)):
             raise NaoEncontrado("Orçamento não encontrado.")
         orcamento = self._atualizar_vencimento(orcamento)
         orcamento["itens"] = self.banco.todos("SELECT * FROM orcamento_itens WHERE orcamento_id=? ORDER BY rowid", (orcamento_id,))
@@ -123,8 +125,11 @@ class ComercialMixin:
 
     def salvar_orcamento(self, ator: Ator, dados: dict, orcamento_id: str | None = None) -> dict:
         ator.exigir("orcamentos", "editar" if orcamento_id else "criar")
+        if orcamento_id:
+            self.obter_orcamento(ator, orcamento_id)  # precisa estar na parte da igreja de quem edita
         contato_id = dados.get("contato_id")
-        if not contato_id or not self.banco.um("SELECT 1 AS x FROM contatos WHERE id=? AND empresa_id=?", (contato_id, ator.empresa)):
+        if (not contato_id or not self.banco.um("SELECT 1 AS x FROM contatos WHERE id=? AND empresa_id=?", (contato_id, ator.empresa))
+                or not self._contato_no_alcance(ator, contato_id)):
             raise ErroNegocio("Escolha o nome (cliente) do orçamento.")
         itens_entrada = dados.get("itens") or []
         if not isinstance(itens_entrada, list) or not itens_entrada:
@@ -307,13 +312,15 @@ class ComercialMixin:
         if status not in STATUS_AGENDA:
             raise ErroNegocio("Status inválido.")
         contato_id = dados.get("contato_id", atual.get("contato_id")) or None
-        if contato_id and not self.banco.um("SELECT 1 AS x FROM contatos WHERE id=? AND empresa_id=?", (contato_id, ator.empresa)):
+        if contato_id and (not self.banco.um("SELECT 1 AS x FROM contatos WHERE id=? AND empresa_id=?", (contato_id, ator.empresa))
+                           or not self._contato_no_alcance(ator, contato_id)):
             raise ErroNegocio("Nome inválido.")
         fila_id = dados.get("fila_id", atual.get("fila_id")) or None
         if fila_id and not self.banco.um("SELECT 1 AS x FROM filas WHERE id=? AND empresa_id=?", (fila_id, ator.empresa)):
             raise ErroNegocio("Equipe inválida.")
         responsavel_id = dados.get("responsavel_id", atual.get("responsavel_id")) or None
-        if responsavel_id and not self.banco.um("SELECT 1 AS x FROM usuarios WHERE id=? AND empresa_id=? AND perfil<>'cliente'", (responsavel_id, ator.empresa)):
+        if responsavel_id and (not self.banco.um("SELECT 1 AS x FROM usuarios WHERE id=? AND empresa_id=? AND perfil<>'cliente'", (responsavel_id, ator.empresa))
+                               or not self._usuario_no_alcance(ator, responsavel_id)):
             raise ErroNegocio("Responsável inválido.")
         lembrete = int(dados.get("lembrete_minutos", atual.get("lembrete_minutos", 60)) or 0)
         return {
@@ -345,14 +352,15 @@ class ComercialMixin:
         if ate:
             sql += " AND a.inicio <= ?"
             parametros.append(ate)
-        return self.banco.todos(sql + " ORDER BY a.inicio LIMIT 500", parametros)
+        linhas = self.banco.todos(sql + " ORDER BY a.inicio LIMIT 2000", parametros)
+        return [a for a in linhas if self._agenda_no_alcance(ator, a)][:500]
 
     def salvar_agendamento(self, ator: Ator, dados: dict, agendamento_id: str | None = None, forcar: bool = False) -> dict:
         ator.exigir("agenda", "editar" if agendamento_id else "criar")
         atual = None
         if agendamento_id:
             atual = self.banco.um("SELECT * FROM agenda WHERE id=? AND empresa_id=?", (agendamento_id, ator.empresa))
-            if not atual:
+            if not atual or not self._agenda_no_alcance(ator, atual):
                 raise NaoEncontrado("Agendamento não encontrado.")
         valores = self._limpar_agenda(ator, dados, atual)
         conflitos = self._conflitos_agenda(ator.empresa, valores, agendamento_id)
@@ -371,9 +379,9 @@ class ComercialMixin:
             agendamento_id = novo_id()
             self.banco.executar(
                 """INSERT INTO agenda(id, empresa_id, titulo, inicio, fim, contato_id, fila_id, responsavel_id, observacao, status,
-                   lembrete_minutos, criado_em) VALUES (:id,:empresa,:titulo,:inicio,:fim,:contato_id,:fila_id,:responsavel_id,:observacao,
-                   :status,:lembrete_minutos,:agora)""",
-                {**valores, "id": agendamento_id, "empresa": ator.empresa, "agora": agora()},
+                   lembrete_minutos, criado_em, unidade_id) VALUES (:id,:empresa,:titulo,:inicio,:fim,:contato_id,:fila_id,:responsavel_id,:observacao,
+                   :status,:lembrete_minutos,:agora,:unidade)""",
+                {**valores, "id": agendamento_id, "empresa": ator.empresa, "agora": agora(), "unidade": self._unidade_do_lancamento(ator)},
             )
         self.auditar(ator, "agenda.salvar", agendamento_id, {"inicio": valores["inicio"], "conflito_aceito": bool(conflitos)})
         return next(a for a in self.listar_agenda(ator) if a["id"] == agendamento_id)
