@@ -1,0 +1,34 @@
+/* Central de Pesquisas — modernização: selo online/offline, avisos, troca de código, lixeira e gráficos */
+.cp-selo{border:1px solid #bbf7d0;background:#f0fdf4;color:#166534;border-radius:999px;padding:6px 11px;font-size:12px;font-weight:800;white-space:nowrap;margin-left:auto;margin-right:8px}
+.cp-selo.off{border-color:#fed7aa;background:#fff7ed;color:#9a3412}
+.cp-faixa-off{margin-bottom:14px;padding:12px 14px;border-radius:12px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;font-weight:700}
+.cp-aviso{position:fixed;left:50%;bottom:24px;transform:translate(-50%,40px);opacity:0;z-index:100000;background:#0f172a;color:#fff;padding:12px 18px;border-radius:12px;font-weight:700;max-width:calc(100% - 32px);box-shadow:0 12px 40px rgba(0,0,0,.25);transition:.25s;pointer-events:none}
+.cp-aviso.on{opacity:1;transform:translate(-50%,0)}
+.cp-modal{position:fixed;inset:0;z-index:100001;background:rgba(15,23,42,.72);display:flex;align-items:center;justify-content:center;padding:16px}
+.cp-modal-caixa{width:100%;max-width:440px;max-height:calc(100vh - 32px);overflow:auto}
+.cp-erro{color:#b91c1c;font-weight:700;min-height:1.2em;margin-top:10px}
+.btn.cp-perigo{background:#fee2e2;color:#991b1b}
+.cp-legenda{display:flex;flex-wrap:wrap;gap:14px;margin:10px 0 4px;font-size:13px;color:var(--muted)}
+.cp-legenda span,.cp-pizza-lista div{display:flex;align-items:center;gap:6px}
+.cp-legenda i,.cp-pizza-lista i{width:12px;height:12px;border-radius:3px;display:inline-block;flex:none}
+.cp-graf-grade{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:14px;margin-top:14px}
+.cp-pizza{width:180px;height:180px;border-radius:50%;margin:10px auto;display:grid;place-items:center}
+.cp-pizza>div{width:110px;height:110px;border-radius:50%;background:var(--card);display:grid;place-items:center;align-content:center;font-size:26px;font-weight:800;color:var(--text)}
+.cp-pizza small{display:block;font-size:11px;color:var(--muted);font-weight:600}
+.cp-pizza-lista{display:grid;gap:6px;font-size:14px}.cp-pizza-lista b{margin-left:auto}
+.cp-colunas{display:flex;align-items:flex-end;gap:5px;height:190px;padding-top:18px}
+.cp-coluna{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;min-width:0}
+.cp-coluna>div{width:100%;background:#2563eb;border-radius:6px 6px 0 0;min-height:2px}
+.cp-coluna span{font-size:11px;font-weight:800;color:var(--text)}.cp-coluna small{font-size:10px;color:var(--muted);margin-top:4px}
+.cp-barras{display:grid;gap:9px;margin-top:8px}
+.cp-barra-linha{display:grid;grid-template-columns:minmax(90px,200px) minmax(0,1fr) auto;gap:10px;align-items:center}
+.cp-barra-nome{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cp-barra-trilho{height:16px;background:var(--border);border-radius:999px;overflow:hidden}
+.cp-barra-cheia{height:100%;display:flex;border-radius:999px;overflow:hidden}.cp-barra-cheia span{height:100%}
+.cp-barra-num{font-weight:800;text-align:right;white-space:nowrap}.cp-barra-num small{display:block;font-weight:600;color:var(--muted);font-size:11px}
+body[data-theme="medio"] .cp-faixa-off,body[data-theme="escuro"] .cp-faixa-off{background:rgba(234,88,12,.15);border-color:rgba(234,88,12,.4);color:#fdba74}
+body[data-theme="medio"] .cp-selo,body[data-theme="escuro"] .cp-selo{background:rgba(22,163,74,.15);border-color:rgba(22,163,74,.4);color:#86efac}
+body[data-theme="medio"] .cp-selo.off,body[data-theme="escuro"] .cp-selo.off{background:rgba(234,88,12,.15);border-color:rgba(234,88,12,.4);color:#fdba74}
+@media (max-width:800px){.cp-graf-grade{grid-template-columns:1fr}.cp-barra-linha{grid-template-columns:1fr auto}.cp-barra-trilho{grid-column:1/-1;grid-row:2}}
+@media (max-width:600px){.cp-selo{padding:5px 8px;font-size:11px;margin-right:4px}.rmd-empresa-topo{display:none}}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}

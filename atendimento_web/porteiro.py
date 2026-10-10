@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import http.client
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -24,8 +25,28 @@ PORTA_SOBROU = 8095
 PREFIXO = "/sobrou"
 PREFIXO_PESQUISAS = "/pesquisas"
 PASTA_PESQUISAS = RAIZ / "modules" / "central_pesquisas"
-ARQUIVOS_PESQUISAS = {"": ("index.html", "text/html; charset=utf-8"), "index.html": ("index.html", "text/html; charset=utf-8"),
-                      "aparencia.css": ("aparencia.css", "text/css; charset=utf-8"), "aparencia.js": ("aparencia.js", "application/javascript; charset=utf-8")}
+# Lista fechada: só estes tipos, só nestas pastas, sem ".." — nenhum outro arquivo do servidor sai por aqui.
+TIPOS_PESQUISAS = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "application/javascript; charset=utf-8",
+                   ".webmanifest": "application/manifest+json; charset=utf-8", ".png": "image/png", ".ico": "image/x-icon"}
+PASTAS_PESQUISAS = {"", "css", "js", "icones", "lib"}
+NOME_SEGURO = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,80}$")
+
+
+def _arquivo_pesquisas(nome: str):
+    """Devolve (arquivo, tipo) se o nome pedido for uma tela permitida da Central de Pesquisas; senão None."""
+    nome = nome or "index.html"
+    partes = nome.split("/")
+    if len(partes) > 2 or (len(partes) == 2 and partes[0] not in PASTAS_PESQUISAS):
+        return None
+    if not all(NOME_SEGURO.match(p) for p in partes) or ".." in nome:
+        return None
+    tipo = TIPOS_PESQUISAS.get(Path(partes[-1]).suffix.lower())
+    if not tipo or partes[-1].endswith(".sql"):
+        return None
+    arquivo = (PASTA_PESQUISAS / nome).resolve()
+    if PASTA_PESQUISAS.resolve() not in arquivo.parents or not arquivo.is_file():
+        return None
+    return arquivo, tipo
 SEM_REPASSE = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers",
                "transfer-encoding", "upgrade", "content-length", "x-forwarded-prefix"}
 
@@ -70,16 +91,17 @@ class Porteiro(BaseHTTPRequestHandler):
     def _pesquisas(self, caminho: str):
         """Entrega só as telas da Central de Pesquisas (lista fechada: nenhum outro arquivo do servidor sai por aqui)."""
         nome = caminho[len(PREFIXO_PESQUISAS) + 1:].split("?", 1)[0].split("#", 1)[0]
-        item = ARQUIVOS_PESQUISAS.get(nome)
-        arquivo = PASTA_PESQUISAS / item[0] if item else None
-        if self.command not in ("GET", "HEAD") or not arquivo or not arquivo.is_file():
+        item = _arquivo_pesquisas(nome)
+        if self.command not in ("GET", "HEAD") or not item:
             dados, status, tipo = "Não encontrado.".encode(), 404, "text/plain; charset=utf-8"
         else:
-            dados, status, tipo = arquivo.read_bytes(), 200, item[1]
+            dados, status, tipo = item[0].read_bytes(), 200, item[1]
         self.send_response(status)
         self.send_header("Content-Type", tipo)
         self.send_header("Content-Length", str(len(dados)))
         self.send_header("Cache-Control", "no-cache")
+        if nome == "sw.js":
+            self.send_header("Service-Worker-Allowed", PREFIXO_PESQUISAS + "/")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
