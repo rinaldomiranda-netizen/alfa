@@ -311,13 +311,17 @@ class Handler(BaseHTTPRequestHandler):
         if config:
             config = {k: config[k] for k in ("empresa_nome", "empresa_slug", "nome_sistema", "logo", "tema", "cor_destaque", "fuso",
                                              "mensagem_inicial", "atribuicao_automatica", "pedir_avaliacao", "demonstracao", "plano")}
+        nomes = p.nomes_personalizados(a.empresa_id) if a.empresa_id and a.perfil != "owner" else {"perfis": {}, "telas": {}}
+        acoes_off = a.extras.get("acoes_off", ())
         return {
             "usuario": {"id": a.usuario_id, "nome": a.nome, "email": a.email, "perfil": a.perfil,
-                        "perfil_nome": permissoes.NOMES_PERFIS[a.perfil], "fila_id": a.fila_id, "contato_id": a.contato_id,
-                        "trocar_senha": a.trocar_senha},
+                        "perfil_nome": nomes["perfis"].get(a.perfil) or permissoes.NOMES_PERFIS[a.perfil],
+                        "fila_id": a.fila_id, "contato_id": a.contato_id, "trocar_senha": a.trocar_senha},
             "empresa": config,
             "telas": self._telas(a),
-            "permissoes": {r: acoes for r, acoes in permissoes.permissoes_do_perfil(a.perfil).items()
+            "personalizacao": {"telas": nomes["telas"], "perfil_proprio": bool(nomes["perfis"].get(a.perfil))},
+            "permissoes": {r: [x for x in acoes if f"{r}.{x}" not in acoes_off]
+                           for r, acoes in permissoes.permissoes_do_perfil(a.perfil).items()
                            if r not in a.extras.get("recursos_off", ())
                            and not (EDICAO == "church" and a.perfil == "owner" and r not in ("empresas", "plano", "seguranca"))},
             "temas": NOMES_TEMAS,
@@ -742,9 +746,19 @@ class Handler(BaseHTTPRequestHandler):
     # ---------------------------------------------------------------- usuários, backup, plano, segurança, config
     @rota("GET", "/api/usuarios")
     def r_usuarios(self):
-        return {"usuarios": plataforma().listar_usuarios(self.ator),
-                "perfis": [{"id": p, "nome": permissoes.NOMES_PERFIS[p]} for p in permissoes.perfis_que_pode_criar(self.ator.perfil)],
-                "matriz": {p: permissoes.permissoes_do_perfil(p) for p in permissoes.PERFIS}}
+        p = plataforma()
+        nomes = p.nomes_personalizados(self.ator.empresa)["perfis"]  # nomes dos perfis escolhidos pelo RMD Desenvolvedor
+        usuarios = [{**u, "perfil_nome": nomes.get(u["perfil"]) or u["perfil_nome"]} for u in p.listar_usuarios(self.ator)]
+        matriz = {}
+        for perfil in permissoes.PERFIS:
+            recursos_off, acoes_off = p.restricoes_do_perfil(self.ator.empresa, perfil) if perfil != "owner" else (set(), set())
+            recursos_off = recursos_off | set(self.ator.extras.get("recursos_off", ()) if perfil != "owner" else ())
+            matriz[perfil] = {r: [a for a in acoes if f"{r}.{a}" not in acoes_off]
+                              for r, acoes in permissoes.permissoes_do_perfil(perfil).items() if r not in recursos_off}
+        return {"usuarios": usuarios,
+                "perfis": [{"id": x, "nome": nomes.get(x) or permissoes.NOMES_PERFIS[x]} for x in permissoes.perfis_que_pode_criar(self.ator.perfil)],
+                "nomes_perfis": {x: nomes.get(x) for x in permissoes.PERFIS if nomes.get(x)},
+                "matriz": matriz}
 
     @rota("POST", "/api/usuarios")
     def r_usuario_criar(self):
@@ -873,6 +887,14 @@ class Handler(BaseHTTPRequestHandler):
         d = self._corpo()
         return plataforma().criar_admin_da_sede(self.ator, eid, d.get("nome"), d.get("email"))
 
+    @rota("GET", "/api/sistema/igrejas/{eid}/personalizacao")
+    def r_sistema_personalizacao(self, eid):
+        return plataforma().catalogo_personalizacao(self.ator, eid)
+
+    @rota("PUT", "/api/sistema/igrejas/{eid}/personalizacao")
+    def r_sistema_personalizacao_salvar(self, eid):
+        return plataforma().salvar_personalizacao(self.ator, eid, self._corpo())
+
     @rota("POST", "/api/sistema/erros/vistos")
     def r_sistema_erros_vistos(self):
         return plataforma().marcar_erros_vistos(self.ator)
@@ -910,7 +932,10 @@ class Handler(BaseHTTPRequestHandler):
         if not empresa:
             raise ErroNegocio("Empresa não encontrada.")
         c = p.obter_config(empresa["id"])
-        return {k: c[k] for k in ("empresa_nome", "nome_sistema", "logo", "tema", "cor_destaque")}
+        publico = {k: c[k] for k in ("empresa_nome", "nome_sistema", "logo", "tema", "cor_destaque")}
+        if EDICAO == "church":
+            publico["cartao"] = p.cartao_publico(empresa["id"])  # como o RMD Desenvolvedor configurou o cartão
+        return publico
 
     @rota("GET", "/api/publico/{slug}/unidade/{uid}", "publico")
     def r_publico_unidade(self, slug, uid):
@@ -934,7 +959,11 @@ class Handler(BaseHTTPRequestHandler):
         self._limite_publico()
         d = self._corpo()
         self._recurso_publico_ligado(slug, "oracoes" if d.get("tipo") == "oracao" else "visitantes")
-        return self._church().publico_cartao(slug, d)
+        p = self._church()
+        empresa = p.empresa_por_slug(slug)
+        if empresa:
+            d = p.conferir_cartao(empresa["id"], d)
+        return p.publico_cartao(slug, d)
 
     @rota("GET", "/api/publico/conversas/{token}", "publico")
     def r_publico_estado(self, token):
@@ -981,6 +1010,7 @@ ROTAS_DO_CRIADOR = frozenset({
     "seguranca", "2fa_iniciar", "2fa_ativar", "2fa_desativar", "sessao_encerrar",
     "empresas", "empresa_criar", "empresa_editar",
     "sistema", "sistema_recursos", "sistema_admin", "sistema_erros_vistos",
+    "sistema_personalizacao", "sistema_personalizacao_salvar",
 })
 
 

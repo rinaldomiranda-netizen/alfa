@@ -30,16 +30,49 @@
   function ler(form) {
     const d = { tipo: form.dataset.tipo };
     if (unidade) d.unidade = unidade;
-    form.querySelectorAll("input[name],select[name],textarea[name]").forEach((el) => { d[el.name] = el.type === "checkbox" ? el.checked : el.value.trim(); });
+    form.querySelectorAll("input[name],select[name],textarea[name]").forEach((el) => { if (!el.disabled) d[el.name] = el.type === "checkbox" ? el.checked : el.value.trim(); });
     return d;
+  }
+  /* Cartão configurado pelo RMD Desenvolvedor: abas, textos e cada campo (ligado, nome, obrigatório). */
+  let CONF = null;
+  function aplicarCartao(c) {
+    if (!c) return;
+    CONF = c;
+    const t = c.textos || {};
+    const abaV = document.querySelector('[data-aba="visitante"]'), abaO = document.querySelector('[data-aba="oracao"]');
+    if (t.aba_visitante) abaV.textContent = t.aba_visitante;
+    if (t.aba_oracao) abaO.textContent = t.aba_oracao;
+    if (t.texto_visitante) $("#f-visitante p.suave").textContent = t.texto_visitante;
+    if (t.texto_oracao) $("#f-oracao p.suave").textContent = t.texto_oracao;
+    if (t.subtitulo && !unidade) $("#sub").textContent = t.subtitulo;
+    abaV.hidden = !c.visitante; abaO.hidden = !c.oracao;
+    if (!c.visitante || !c.oracao) document.querySelector(".vis-abas").classList.add("uma-aba");
+    for (const [form, lista] of [["#f-visitante", c.campos_visitante || []], ["#f-oracao", c.campos_oracao || []]]) {
+      const f = $(form), ligados = Object.fromEntries(lista.map((x) => [x.campo, x]));
+      f.querySelectorAll("input[name],select[name],textarea[name]").forEach((el) => {
+        if (el.name === "consentimento") return;
+        const caixa = el.closest(".campo, .opcao-check"), cfg = ligados[el.name];
+        if (!cfg) { if (caixa) caixa.hidden = true; el.disabled = true; el.required = false; return; }
+        el.required = !!cfg.obrigatorio;
+        if (caixa && caixa.classList.contains("campo")) { const l = caixa.querySelector("label"); if (l) l.textContent = cfg.rotulo + (cfg.obrigatorio ? " *" : ""); }
+        else if (caixa) { caixa.lastChild.textContent = " " + cfg.rotulo; }
+      });
+    }
+    if (!c.visitante && c.oracao) aba("oracao");
+  }
+  function faltando(form, d) {
+    const lista = CONF ? (d.tipo === "oracao" ? CONF.campos_oracao : CONF.campos_visitante) : null;
+    if (!lista) return d.tipo === "visitante" ? ((!d.nome || !d.telefone) && "Preencha seu nome e WhatsApp.") : (!d.pedido && "Escreva o seu pedido.");
+    const f = lista.find((x) => x.obrigatorio && !(d[x.campo] === true || String(d[x.campo] || "").trim()));
+    return f ? "Preencha: " + f.rotulo + "." : "";
   }
   async function enviar(ev) {
     ev.preventDefault();
     const form = ev.currentTarget, erro = form.querySelector("[data-erro]"), botao = form.querySelector("button[type=submit]");
     erro.textContent = "";
     const d = ler(form);
-    if (d.tipo === "visitante" && (!d.nome || !d.telefone)) { erro.textContent = "Preencha seu nome e WhatsApp."; return; }
-    if (d.tipo === "oracao" && !d.pedido) { erro.textContent = "Escreva o seu pedido."; return; }
+    const falta = faltando(form, d);
+    if (falta) { erro.textContent = falta; return; }
     if (!d.consentimento) { erro.textContent = "Marque a autorização para enviar."; return; }
     botao.disabled = true;
     try {
@@ -48,6 +81,7 @@
       $("#obrigado-titulo").textContent = d.tipo === "oracao" ? "Pedido recebido 🙏" : "Seja muito bem-vindo! 👋";
       $("#obrigado-texto").textContent = r.mensagem || "Obrigado!";
       $("#obrigado").hidden = false;
+      $("#de-novo").onclick = () => aba(CONF && !CONF.visitante ? "oracao" : "visitante");
     } catch (e) { erro.textContent = e.message; }
     finally { botao.disabled = false; }
   }
@@ -58,5 +92,5 @@
   if (!slug) { $("#igreja").textContent = "Link incompleto"; $("#principal").hidden = true; return; }
   if (unidade) api("/api/publico/" + encodeURIComponent(slug) + "/unidade/" + encodeURIComponent(unidade))
     .then((u) => { $("#sub").textContent = u.nome + " • Que alegria ter você aqui!"; }).catch(() => {});
-  api("/api/publico/" + encodeURIComponent(slug) + "/empresa").then(marca).catch(() => { $("#igreja").textContent = "Igreja não encontrada"; $("#principal").hidden = true; });
+  api("/api/publico/" + encodeURIComponent(slug) + "/empresa").then((e) => { marca(e); aplicarCartao(e.cartao); }).catch(() => { $("#igreja").textContent = "Igreja não encontrada"; $("#principal").hidden = true; });
 })();

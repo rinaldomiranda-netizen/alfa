@@ -173,6 +173,9 @@ function aplicarTema() {
 
 /* ---------------------------------------------------------------- telas */
 function registrarTela(chave, def) { App.telas[chave] = def; }
+/* Nome/explicação da tela escolhidos pelo RMD Desenvolvedor para este cliente (vazio = o padrão do sistema). */
+function personalTela(chave) { const p = App.sessao && App.sessao.personalizacao; return (p && p.telas && p.telas[chave]) || {}; }
+function textoFixo(texto) { return h("span", { dataset: { fixo: "1" }, text: texto }); }
 const MENU = [
   ["Principal", ["dash", "chat", "names", "queues"]],
   ["Gestão", ["quotes", "services", "flows", "agenda"]],
@@ -200,10 +203,13 @@ async function mostrarTela() {
   $("#lateral").classList.remove("aberta");
   const area = limpar($("#conteudo"));
   const acoes = h("div", { class: "acoes" });
-  area.append(h("div", { class: "titulo-pagina" }, h("div", null, h("h1", { text: def.titulo }), h("p", { text: def.sub || "" })), acoes));
+  const pers = personalTela(chave);
+  area.append(h("div", { class: "titulo-pagina" }, h("div", null,
+    pers.nome ? h("h1", { dataset: { fixo: "1" }, text: pers.nome }) : h("h1", { text: def.titulo }),
+    pers.sub ? h("p", { dataset: { fixo: "1" }, text: pers.sub }) : h("p", { text: def.sub || "" })), acoes));
   const corpo = h("div");
   area.append(corpo);
-  document.title = `${def.titulo} — ${(App.sessao.empresa && App.sessao.empresa.nome_sistema) || "RMD Atendimento"}`;
+  document.title = `${pers.nome || def.titulo} — ${(App.sessao.empresa && App.sessao.empresa.nome_sistema) || "RMD Atendimento"}`;
   try { await def.render(corpo, { acoes, parametro: parametro ? decodeURIComponent(parametro) : null }); }
   catch (e) { corpo.append(h("div", { class: "aviso", text: e.message })); }
 }
@@ -214,6 +220,7 @@ function montarAplicacao() {
   const s = App.sessao;
   const empresa = s.empresa || {};
   const raiz = limpar($("#raiz"));
+  const perfilFixo = s.personalizacao && s.personalizacao.perfil_proprio ? { fixo: "1" } : {};
   const nav = h("nav", { class: "nav", "aria-label": "Menu principal" });
   for (const [secao, telas] of MENU) {
     const visiveis = telas.filter((t) => s.telas.includes(t) && App.telas[t]);
@@ -222,7 +229,7 @@ function montarAplicacao() {
     for (const t of visiveis) {
       const def = App.telas[t];
       nav.append(h("button", { type: "button", dataset: { tela: t }, on: { click: () => navegar(t) } },
-        h("span", { class: "ic", text: def.icone || "•" }), def.titulo,
+        h("span", { class: "ic", text: def.icone || "•" }), personalTela(t).nome ? textoFixo(personalTela(t).nome) : def.titulo,
         t === "alerts" && s.alertas ? h("span", { class: "contador", id: "contador-alertas", text: String(s.alertas) }) : null));
     }
   }
@@ -235,13 +242,13 @@ function montarAplicacao() {
     h("span", { class: "so-largo", text: empresa.nome_sistema || "RMD Atendimento" }),
     empresa.plano ? h("span", { class: "so-largo", text: "• Plano " + empresa.plano.charAt(0).toUpperCase() + empresa.plano.slice(1) }) : null,
     empresa.demonstracao ? h("span", { class: "selo s-demo", text: "DEMONSTRAÇÃO" }) : null,
-    h("span", { class: "selo s-azul so-largo", text: s.usuario.perfil_nome }));
+    h("span", { class: "selo s-azul so-largo", dataset: perfilFixo, text: s.usuario.perfil_nome }));
   const sino = pode("alertas") ? h("button", { class: "btn icone sino", type: "button", title: "Alertas", on: { click: () => navegar("alerts") } }, "🔔",
     h("span", { class: "num", id: "sino-num", hidden: !s.alertas, text: String(s.alertas || "") })) : null;
   const novoOrc = pode("orcamentos", "criar") ? h("button", { class: "btn primario", type: "button", title: "Novo orçamento", on: { click: () => App.editarOrcamento && App.editarOrcamento() } }, "+", h("span", { class: "texto-botao", text: " Novo orçamento" })) : null;
   const botaoUsuario = h("button", { class: "usuario-topo", type: "button", on: { click: alternarMenuUsuario } },
     h("span", { class: "avatar", text: iniciais(s.usuario.nome) }),
-    h("span", { class: "texto-usuario" }, h("span", { text: s.usuario.nome }), h("small", null, h("span", { class: "presenca online", id: "bolinha-presenca" }), " ", s.usuario.perfil_nome)));
+    h("span", { class: "texto-usuario" }, h("span", { text: s.usuario.nome }), h("small", null, h("span", { class: "presenca online", id: "bolinha-presenca" }), " ", h("span", { dataset: perfilFixo, text: s.usuario.perfil_nome }))));
   const cabecalho = h("header", { class: "cabecalho" },
     h("button", { class: "btn icone botao-menu", type: "button", "aria-label": "Abrir menu", text: "☰", on: { click: () => $("#lateral").classList.toggle("aberta") } }),
     h("div", { class: "empresa" }, logo, h("div", { style: { minWidth: 0 } }, h("div", { class: "empresa-nome", text: empresa.empresa_nome || "Plataforma ALFA" }), sub)),

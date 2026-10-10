@@ -19,3 +19,4 @@ body { min-height:100vh; background:radial-gradient(120% 70% at 50% 0%, color-mi
 .vis-obrigado p { color:var(--suave); font-size:16px }
 .vis-rodape { text-align:center; color:var(--suave); font-size:11px; margin:0 }
 @media (max-width:560px) { .vis-form.formulario { grid-template-columns:1fr } }
+.vis-abas.uma-aba { display:none }

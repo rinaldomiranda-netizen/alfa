@@ -656,7 +656,7 @@ class IgrejaMixin:
                 linha = self.banco.um("SELECT id FROM contatos WHERE empresa_id=? AND whatsapp=?", (empresa["id"], valores["telefone"]))
                 contato_id = linha["id"] if linha else None
             self._nova_oracao(empresa["id"], valores, contato_id, "cartao")
-            return {"ok": True, "mensagem": "Recebemos o seu pedido. Vamos orar por você."}
+            return {"ok": True, "mensagem": self._texto_cartao(empresa["id"], "obrigado_oracao")}
         if not normalizar_telefone(dados.get("telefone")):
             raise ErroNegocio("Informe o seu WhatsApp para a igreja poder falar com você.")
         contato = self._contato_do_visitante(empresa["id"], dados)
@@ -673,7 +673,10 @@ class IgrejaMixin:
             valores = self._limpar_oracao({"nome": contato["nome"], "telefone": dados.get("telefone"), "pedido": dados.get("pedido"),
                                            "categoria": dados.get("categoria") or "outro", "privacidade": "equipe"}) | {"unidade_id": unidade}
             self._nova_oracao(empresa["id"], valores, contato["id"], "cartao")
-        return {"ok": True, "mensagem": "Que alegria ter você conosco! Em breve alguém da igreja vai falar com você."}
+        return {"ok": True, "mensagem": self._texto_cartao(empresa["id"], "obrigado_visitante")}
+
+    def _texto_cartao(self, empresa_id: str, chave: str) -> str:
+        return self.cartao_publico(empresa_id)["textos"][chave]
 
     def publico_unidade(self, slug: str, unidade_id: str) -> dict:
         empresa = self.empresa_por_slug(slug)

@@ -84,3 +84,14 @@
   .ig-quadro { grid-template-columns:1fr; overflow:visible }
   .ig-mural { grid-template-columns:1fr }
 }
+
+/* configuração completa por igreja (RMD Desenvolvedor) */
+.ig-cfg-abas{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
+@media (min-width:900px){.ig-cfg-abas{flex-direction:row;flex-wrap:wrap}}
+.ig-cfg-corpo{max-height:62vh;overflow:auto;padding-right:4px}
+.ig-cfg-linha{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;padding:8px 0;border-bottom:1px solid var(--borda,rgba(255,255,255,.08))}
+.ig-cfg-linha>b{min-width:190px}
+.ig-cfg-opcoes{display:flex;flex-wrap:wrap;gap:4px 14px}
+.ig-cfg-perfil{margin-bottom:10px}
+.ig-cfg-perfil summary{cursor:pointer}
+.ig-cfg-tela{border-bottom:1px solid var(--borda,rgba(255,255,255,.08));padding-bottom:6px;margin-bottom:6px}

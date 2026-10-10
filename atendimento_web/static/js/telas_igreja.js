@@ -470,7 +470,8 @@ registrarTela("system", {
         h("div", { class: "ig-linha", style: { marginTop: "10px" } },
           h("label", { class: "ig-filtro" }, h("span", { class: "suave", text: "Plano:" }), plano),
           h("button", { class: "btn pequeno " + (e.ativa ? "perigo" : "primario"), type: "button", text: e.ativa ? "Bloquear igreja" : "Liberar igreja", on: { click: alternar } }),
-          h("button", { class: "btn pequeno", type: "button", text: "+ Administração da Sede", on: { click: () => novoAdmin(e) } })),
+          h("button", { class: "btn pequeno", type: "button", text: "+ Administração da Sede", on: { click: () => novoAdmin(e) } }),
+          h("button", { class: "btn pequeno primario", type: "button", text: "⚙ Configurar tudo (perfis, menus, ações, cartão)", on: { click: () => configurarIgreja(e).catch(falha) } })),
         h("h3", { text: "Funções liberadas" }), recursos,
         h("div", { class: "ig-linha" }, h("button", { class: "btn pequeno primario", type: "button", text: "Salvar funções", on: { click: salvarRecursos } }))));
     });
@@ -487,3 +488,125 @@ registrarTela("system", {
       ], d.erros) : h("div", { class: "vazio", text: "Nenhum erro registrado. 👍" })));
   },
 });
+
+
+/* ================================================================ CONFIGURAÇÃO COMPLETA POR IGREJA (RMD Desenvolvedor)
+   Nomes dos perfis, menu de cada perfil, ações de cada perfil, nome de cada tela e o cartão do visitante.
+   Só tira permissões do padrão (nunca dá a mais) e não mostra nenhum dado das pessoas. */
+async function configurarIgreja(e) {
+  const c = await api("/api/sistema/igrejas/" + e.id + "/personalizacao");
+  const atual = c.atual || {};
+  const ap = atual.perfis || {}, at = atual.telas || {}, ac = atual.cartao || {};
+  const nomeTela = (t) => (App.telas[t] && App.telas[t].titulo) || t;
+  const leitores = [];   // cada parte da tela devolve o pedaço da configuração que ela cuida
+  const abas = h("div", { class: "ig-cfg-abas", role: "tablist" });
+  const corpo = h("div", { class: "ig-cfg-corpo" });
+  const paineis = {};
+  const aba = (chave, texto) => {
+    const b = h("button", { type: "button", class: "btn pequeno", text: texto, on: { click: () => mostrar(chave) } });
+    b.dataset.aba = chave; abas.append(b); paineis[chave] = h("div", { hidden: true }); corpo.append(paineis[chave]);
+  };
+  const mostrar = (chave) => {
+    Object.entries(paineis).forEach(([k, el]) => { el.hidden = k !== chave; });
+    abas.querySelectorAll("button").forEach((b) => b.classList.toggle("primario", b.dataset.aba === chave));
+  };
+  aba("perfis", "👤 Perfis e nomes"); aba("menus", "☰ Menu de cada perfil"); aba("acoes", "✔ O que cada perfil pode fazer");
+  aba("telas", "✎ Nomes das telas"); aba("cartao", "📇 Cartão do visitante");
+
+  // ---- perfis: nome de cada perfil
+  const nomesPerfil = {};
+  paineis.perfis.append(h("p", { class: "suave", text: "Mude o nome que aparece para cada perfil nesta igreja. Em branco = nome padrão." }),
+    h("div", { class: "formulario" }, c.perfis.map((p) => {
+      nomesPerfil[p.perfil] = entrada("nome_" + p.perfil, (ap[p.perfil] || {}).nome || "", { placeholder: p.nome_padrao, maxlength: 60 });
+      return campo(p.nome_padrao, nomesPerfil[p.perfil]);
+    })));
+
+  // ---- menus: que telas cada perfil vê
+  const caixasMenu = {};
+  const tabelaMenu = h("table", { class: "tabela" },
+    h("thead", null, h("tr", null, h("th", { text: "Tela do menu" }), c.perfis.map((p) => h("th", { text: p.nome_padrao })))),
+    h("tbody", null, c.telas.map((t) => h("tr", null, h("td", { text: nomeTela(t.tela) }), c.perfis.map((p) => {
+      if (!p.telas.includes(t.tela)) return h("td", { class: "suave", text: "—" });
+      if (t.tela === "security") return h("td", { class: "suave", text: "sempre" });
+      const marcado = ((ap[p.perfil] || {}).telas || {})[t.tela] !== false;
+      const cx = h("input", { type: "checkbox", checked: marcado, "aria-label": nomeTela(t.tela) + " — " + p.nome_padrao });
+      (caixasMenu[p.perfil] = caixasMenu[p.perfil] || {})[t.tela] = cx;
+      return h("td", null, cx);
+    })))));
+  paineis.menus.append(h("p", { class: "suave", text: "Desmarque para esconder a tela daquele perfil. O servidor também bloqueia o acesso (não é só esconder o botão). “—” = o perfil não tem essa tela no sistema." }),
+    h("div", { style: { overflowX: "auto" } }, tabelaMenu));
+
+  // ---- ações: o que cada perfil pode fazer em cada área
+  const caixasAcao = {};
+  c.perfis.forEach((p) => {
+    const linhas = Object.entries(p.acoes).map(([recurso, acoes]) => h("div", { class: "ig-cfg-linha" },
+      h("b", { text: c.nomes_recursos[recurso] || recurso }),
+      h("div", { class: "ig-cfg-opcoes" }, acoes.map((a) => {
+        const marcado = (((ap[p.perfil] || {}).acoes || {})[recurso] || {})[a] !== false;
+        const cx = h("input", { type: "checkbox", checked: marcado });
+        ((caixasAcao[p.perfil] = caixasAcao[p.perfil] || {})[recurso] = caixasAcao[p.perfil][recurso] || {})[a] = cx;
+        return h("label", { class: "opcao-check" }, cx, " " + (c.nomes_acoes[a] || a));
+      }))));
+    paineis.acoes.append(h("details", { class: "cartao ig-cfg-perfil" }, h("summary", null, h("b", { text: p.nome_padrao }), h("span", { class: "suave", text: " — " + linhas.length + " áreas" })), linhas));
+  });
+  paineis.acoes.prepend(h("p", { class: "suave", text: "Aqui aparecem só as ações que o perfil já tem no sistema. Desmarque o que ele NÃO deve fazer nesta igreja (ex.: Obreiro não exclui nomes). Para dar mais acesso a alguém, mude o perfil da pessoa." }));
+
+  // ---- nomes das telas
+  const nomesTela = {};
+  paineis.telas.append(h("p", { class: "suave", text: "Nome no menu e explicação no topo de cada tela, para todos desta igreja. Em branco = padrão." }),
+    h("div", null, c.telas.map((t) => {
+      const n = entrada("tn_" + t.tela, (at[t.tela] || {}).nome || "", { placeholder: nomeTela(t.tela), maxlength: 50 });
+      const sub = entrada("ts_" + t.tela, (at[t.tela] || {}).sub || "", { placeholder: (App.telas[t.tela] && App.telas[t.tela].sub) || "Explicação (opcional)", maxlength: 140 });
+      nomesTela[t.tela] = { n, sub };
+      return h("div", { class: "formulario ig-cfg-tela" }, campo("Nome no menu", n), campo("Explicação", sub));
+    })));
+
+  // ---- cartão do visitante
+  const textos = {};
+  const cv = entrada("cartao_visitante", "", { type: "checkbox", checked: ac.visitante !== false });
+  const co = entrada("cartao_oracao", "", { type: "checkbox", checked: ac.oracao !== false });
+  const nomesTextos = { aba_visitante: "Nome da aba de visitante", aba_oracao: "Nome da aba de oração", subtitulo: "Frase do topo",
+    texto_visitante: "Texto da aba de visitante", texto_oracao: "Texto da aba de oração",
+    obrigado_visitante: "Mensagem depois de enviar (visitante)", obrigado_oracao: "Mensagem depois de enviar (oração)" };
+  const camposCartao = { visitante: {}, oracao: {} };
+  const tabelaCampos = (tipo, lista) => h("table", { class: "tabela" },
+    h("thead", null, h("tr", null, h("th", { text: "Campo" }), h("th", { text: "Ligado" }), h("th", { text: "Obrigatório" }), h("th", { text: "Nome que aparece" }))),
+    h("tbody", null, lista.map((f) => {
+      const a = ((ac.campos || {})[tipo] || {})[f.campo] || {};
+      const lig = h("input", { type: "checkbox", checked: f.fixo ? true : a.ativo !== false, disabled: f.fixo });
+      const obr = h("input", { type: "checkbox", checked: a.obrigatorio !== undefined ? a.obrigatorio : f.obrigatorio, disabled: f.fixo && f.obrigatorio });
+      const rot = entrada("r", a.rotulo || "", { placeholder: f.rotulo, maxlength: 80 });
+      camposCartao[tipo][f.campo] = { lig, obr, rot };
+      return h("tr", null, h("td", { text: f.rotulo + (f.fixo ? " (sempre)" : "") }), h("td", null, lig), h("td", null, obr), h("td", null, rot));
+    })));
+  paineis.cartao.append(
+    h("p", { class: "suave", text: "Como fica o cartão que as pessoas abrem pelo QR Code na entrada da igreja." }),
+    h("div", { class: "ig-linha" }, h("label", { class: "opcao-check" }, cv, " Aba “Primeira vez aqui” (visitante)"), h("label", { class: "opcao-check" }, co, " Aba “Pedido de oração”")),
+    h("div", { class: "formulario" }, Object.entries(nomesTextos).map(([k, rot]) => {
+      textos[k] = entrada("t_" + k, ((ac.textos || {})[k]) || "", { placeholder: c.cartao.textos[k], maxlength: 300 });
+      return campo(rot, textos[k], null, k.startsWith("texto") || k.startsWith("obrigado"));
+    })),
+    h("h3", { text: "Campos — Primeira vez aqui" }), h("div", { style: { overflowX: "auto" } }, tabelaCampos("visitante", c.cartao.campos_visitante)),
+    h("h3", { text: "Campos — Pedido de oração" }), h("div", { style: { overflowX: "auto" } }, tabelaCampos("oracao", c.cartao.campos_oracao)));
+
+  const ler = () => {
+    const perfis = {};
+    c.perfis.forEach((p) => {
+      const telas = {}; Object.entries(caixasMenu[p.perfil] || {}).forEach(([t, cx]) => { telas[t] = cx.checked; });
+      const acoes = {}; Object.entries(caixasAcao[p.perfil] || {}).forEach(([r, m]) => { acoes[r] = {}; Object.entries(m).forEach(([a, cx]) => { acoes[r][a] = cx.checked; }); });
+      perfis[p.perfil] = { nome: nomesPerfil[p.perfil].value, telas, acoes };
+    });
+    const telas = {}; Object.entries(nomesTela).forEach(([t, x]) => { telas[t] = { nome: x.n.value, sub: x.sub.value }; });
+    const campos = { visitante: {}, oracao: {} };
+    ["visitante", "oracao"].forEach((tipo) => Object.entries(camposCartao[tipo]).forEach(([f, x]) => { campos[tipo][f] = { ativo: x.lig.checked, obrigatorio: x.obr.checked, rotulo: x.rot.value }; }));
+    const tx = {}; Object.entries(textos).forEach(([k, el]) => { tx[k] = el.value; });
+    return { perfis, telas, cartao: { visitante: cv.checked, oracao: co.checked, textos: tx, campos } };
+  };
+  mostrar("perfis");
+  modal({ titulo: "Configurar " + e.nome, subtitulo: "Tudo aqui vale só para esta igreja. Você mexe no funcionamento — os dados das pessoas continuam só da igreja.",
+    conteudo: h("div", { class: "ig-cfg" }, abas, corpo), larga: true,
+    acoes: [{ texto: "Cancelar" }, { texto: "Salvar configuração", classe: "primario", acao: async () => {
+      await api("/api/sistema/igrejas/" + e.id + "/personalizacao", { metodo: "PUT", dados: ler() });
+      toast("Configuração de " + e.nome + " salva. Vale no próximo acesso de cada pessoa.");
+    } }] });
+}

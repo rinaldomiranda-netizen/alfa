@@ -445,6 +445,14 @@ ESQUEMA = [
     ALTER TABLE contatos ADD COLUMN unidade_id TEXT;
     ALTER TABLE agenda ADD COLUMN unidade_id TEXT;
     """,
+    # 7 — Configuração completa por cliente feita pelo RMD Desenvolvedor (nomes, menus por perfil, ações, cartão do visitante).
+    """
+    CREATE TABLE IF NOT EXISTS empresa_personalizacao (
+        empresa_id TEXT PRIMARY KEY REFERENCES empresas(id),
+        dados TEXT NOT NULL DEFAULT '{}',
+        atualizado_em TEXT NOT NULL
+    );
+    """,
 ]
 
 PLANOS_PADRAO = (

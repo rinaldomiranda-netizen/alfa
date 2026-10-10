@@ -60,12 +60,13 @@ class Ator:
     extras: dict = field(default_factory=dict)
 
     def exigir(self, recurso: str, acao: str = "ver") -> None:
-        if recurso in self.extras.get("recursos_off", ()):
-            raise permissoes.SemPermissao("Esta função está desligada para esta igreja. Fale com o responsável pelo sistema.")
+        if recurso in self.extras.get("recursos_off", ()) or f"{recurso}.{acao}" in self.extras.get("acoes_off", ()):
+            raise permissoes.SemPermissao("Esta função está desligada para o seu perfil. Fale com o responsável pelo sistema.")
         permissoes.exigir(self.perfil, recurso, acao)
 
     def pode(self, recurso: str, acao: str = "ver") -> bool:
-        return recurso not in self.extras.get("recursos_off", ()) and permissoes.pode(self.perfil, recurso, acao)
+        return (recurso not in self.extras.get("recursos_off", ()) and f"{recurso}.{acao}" not in self.extras.get("acoes_off", ())
+                and permissoes.pode(self.perfil, recurso, acao))
 
     @property
     def empresa(self) -> str:
@@ -450,12 +451,21 @@ class NucleoMixin:
 
     def _ator(self, usuario: dict, empresa_id: str | None) -> Ator:
         empresa = empresa_id if usuario["perfil"] == "owner" else usuario["empresa_id"]
-        desligados = self.recursos_desligados(empresa) if hasattr(self, "recursos_desligados") else set()
+        desligados = set(self.recursos_desligados(empresa)) if hasattr(self, "recursos_desligados") else set()
+        acoes_off: set[str] = set()
+        if usuario["perfil"] != "owner" and hasattr(self, "restricoes_do_perfil"):
+            do_perfil, acoes_off = self.restricoes_do_perfil(empresa, usuario["perfil"])  # configuração do RMD Desenvolvedor
+            desligados |= do_perfil
+        extras = {}
+        if desligados:
+            extras["recursos_off"] = desligados
+        if acoes_off:
+            extras["acoes_off"] = acoes_off
         return Ator(
             usuario_id=usuario["id"], nome=usuario["nome"], email=usuario["email"], perfil=usuario["perfil"],
             empresa_id=empresa,
             contato_id=usuario["contato_id"], fila_id=usuario["fila_id"], trocar_senha=bool(usuario["trocar_senha"]),
-            extras={"recursos_off": desligados} if desligados else {},
+            extras=extras,
         )
 
     def sessao(self, token: str | None) -> Ator | None:

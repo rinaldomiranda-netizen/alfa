@@ -41,7 +41,7 @@ registrarTela("users", {
     const perfis = ["admin", "supervisor", "atendente", "cliente"];
     const recursos = Object.keys(NOMES_RECURSOS).filter((r) => r !== "empresas");
     el.append(h("div", { class: "cartao", style: { marginTop: "15px" } }, h("h2", { text: "O que cada perfil pode fazer" }),
-      tabela([{ titulo: "Área", valor: (r) => NOMES_RECURSOS[r] }, ...perfis.map((p) => ({ titulo: { admin: "Admin. cliente", supervisor: "Supervisor", atendente: "Atendente", cliente: "Cliente" }[p], valor: (r) => (d.matriz[p][r] || []).join(", ") || "—" }))], recursos)));
+      tabela([{ titulo: "Área", valor: (r) => NOMES_RECURSOS[r] }, ...perfis.map((p) => ({ titulo: (d.nomes_perfis && d.nomes_perfis[p]) || { admin: "Admin. cliente", supervisor: "Supervisor", atendente: "Atendente", cliente: "Cliente" }[p], valor: (r) => (d.matriz[p][r] || []).join(", ") || "—" }))], recursos)));
   },
 });
 

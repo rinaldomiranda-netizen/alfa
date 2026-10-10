@@ -62,11 +62,13 @@
     if (no.nodeType === 3) {
       const pai = no.parentNode;
       if (pai && (pai.nodeName === "SCRIPT" || pai.nodeName === "STYLE" || pai.nodeName === "TEXTAREA")) return;
+      if (pai && pai.closest && pai.closest("[data-fixo]")) return; // nome escolhido pelo RMD Desenvolvedor: fica exatamente como ele escreveu
       const novo = trocar(no.nodeValue);
       if (novo !== no.nodeValue) no.nodeValue = novo;
       return;
     }
     if (no.nodeType !== 1) return;
+    if (no.closest && no.closest("[data-fixo]")) return;
     for (const at of ["placeholder", "title", "aria-label", "data-rotulo"]) {
       const v = no.getAttribute && no.getAttribute(at);
       if (v) { const n = trocar(v); if (n !== v) no.setAttribute(at, n); }

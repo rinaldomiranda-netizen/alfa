@@ -14,12 +14,14 @@ from .gestao import GestaoMixin
 from .igreja import IgrejaMixin
 from .nucleo import Ator, Conflito, ErroNegocio, NaoAutenticado, NaoEncontrado, NucleoMixin
 from .permissoes import SemPermissao
+from .personalizacao import PersonalizacaoMixin
 from .sistema import SistemaMixin
 
-VERSAO = "5.4.0"
+VERSAO = "5.5.0"
 
 
-class Plataforma(NucleoMixin, ConversasMixin, FluxosMixin, ComercialMixin, CanaisMixin, GestaoMixin, IgrejaMixin, SistemaMixin):
+class Plataforma(NucleoMixin, ConversasMixin, FluxosMixin, ComercialMixin, CanaisMixin, GestaoMixin, IgrejaMixin, SistemaMixin,
+                 PersonalizacaoMixin):
     def __init__(self, caminho_banco=None, http=None, pasta_backups=None):
         self.banco = Banco(caminho_banco)
         self.http = http or http_padrao
