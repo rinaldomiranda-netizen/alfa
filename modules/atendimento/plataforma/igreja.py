@@ -49,6 +49,23 @@ TEXTO_PAIS = {"setor": "fica direto abaixo da Sede", "campo": "fica direto abaix
               "igreja": "fica dentro de um setor ou de um campo", "congregacao": "fica dentro de um setor, campo ou igreja",
               "departamento": "fica dentro de uma igreja, congregação, setor ou campo"}
 TODA_A_SEDE = None  # escopo "sem limite": Owner e Administração da Sede
+# Assuntos que já vêm cadastrados em "Tipos de solicitação" numa Sede nova (a Sede pode mudar, desligar ou criar outros).
+TIPOS_SOLICITACAO_IGREJA = (
+    ("Visita pastoral", "Pastoral"),
+    ("Aconselhamento pastoral", "Pastoral"),
+    ("Oração / intercessão", "Pastoral"),
+    ("Participar de uma célula", "Células"),
+    ("Abrir uma célula na minha casa", "Células"),
+    ("Batismo", "Ministério"),
+    ("Apresentação de criança", "Ministério"),
+    ("Casamento", "Ministério"),
+    ("Tornar-se membro", "Secretaria"),
+    ("Carta de recomendação / transferência", "Secretaria"),
+    ("Atualizar cadastro de membro", "Secretaria"),
+    ("Ajuda social (cesta básica e outras)", "Ação social"),
+    ("Servir em um ministério (louvor, recepção, infantil…)", "Ministério"),
+    ("Outro assunto", "Outros"),
+)
 
 
 def _data(valor, campo: str) -> str | None:
@@ -171,6 +188,21 @@ class IgrejaMixin:
             if unidade in escopo if unidade else not escopo:
                 saida.append(a)
         return saida
+
+    def garantir_tipos_solicitacao(self, empresa_id: str) -> int:
+        """Sede sem nenhum tipo de solicitação cadastrado recebe a lista padrão da igreja (só uma vez)."""
+        if self.banco.um("SELECT 1 AS x FROM servicos WHERE empresa_id=? LIMIT 1", (empresa_id,)):
+            return 0
+        for nome, categoria in TIPOS_SOLICITACAO_IGREJA:
+            self.banco.executar(
+                "INSERT INTO servicos(id, empresa_id, nome, categoria, descricao, preco_centavos, sla_horas, ativo, criado_em) VALUES (?,?,?,?,?,0,NULL,1,?)",
+                (novo_id(), empresa_id, nome, categoria, None, agora()))
+        return len(TIPOS_SOLICITACAO_IGREJA)
+
+    def preparar_igrejas(self) -> None:
+        """Na edição Church: cada Sede de verdade (não a demonstração) começa com os tipos de solicitação da igreja."""
+        for e in self.banco.todos("SELECT id FROM empresas WHERE demonstracao=0"):
+            self.garantir_tipos_solicitacao(e["id"])
 
     # ---------------------------------------------------------------- escopo nas telas comuns (Nomes, Agenda, Solicitações, Equipe, Relatórios)
     # Regra da hierarquia: a Sede (Administração) vê tudo; quem é lotado num setor/campo/igreja vê só a sua parte

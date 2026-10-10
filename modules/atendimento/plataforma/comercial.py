@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import os
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 
@@ -54,6 +55,14 @@ def _data(valor: str, campo: str) -> str:
 
 class ComercialMixin:
     # ================================================================ SERVIÇOS
+    def _com_valores(self, empresa_id: str) -> bool:
+        return "valores" not in self.recursos_desligados(empresa_id)
+
+    @staticmethod
+    def _rotulo_solicitacao() -> tuple[str, str]:
+        """(nome, sigla) do documento: na igreja é 'Solicitação', nas empresas 'Orçamento'."""
+        return ("Solicitação", "SOL") if os.getenv("RMD_EDICAO", "").strip().lower() == "church" else ("Orçamento", "ORC")
+
     def listar_servicos(self, ator: Ator, somente_ativos: bool = False) -> list[dict]:
         ator.exigir("servicos", "ver")
         sql = "SELECT * FROM servicos WHERE empresa_id=?" + (" AND ativo=1" if somente_ativos else "") + " ORDER BY ativo DESC, categoria, nome"
@@ -65,6 +74,9 @@ class ComercialMixin:
         categoria = _texto(dados.get("categoria"), "categoria", False, 60)
         descricao = _texto(dados.get("descricao"), "descrição", False, 1000)
         preco = centavos(dados.get("preco")) if "preco" in dados else max(0, int(dados.get("preco_centavos") or 0))
+        if not self._com_valores(ator.empresa):  # função "valores" desligada: não grava preço (o que já existia fica guardado)
+            antigo = self.banco.um("SELECT preco_centavos FROM servicos WHERE id=? AND empresa_id=?", (servico_id, ator.empresa)) if servico_id else None
+            preco = antigo["preco_centavos"] if antigo else 0
         sla = dados.get("sla_horas")
         sla = int(sla) if sla not in (None, "") else None
         if sla is not None and not 0 < sla <= 8760:
@@ -135,6 +147,7 @@ class ComercialMixin:
         if not isinstance(itens_entrada, list) or not itens_entrada:
             raise ErroNegocio("Adicione pelo menos um item.")
         itens = []
+        com_valores = self._com_valores(ator.empresa)
         for item in itens_entrada[:50]:
             servico = None
             if item.get("servico_id"):
@@ -149,10 +162,12 @@ class ComercialMixin:
                 raise ErroNegocio("A quantidade precisa ser maior que zero.")
             valor = item.get("valor_unit")
             valor_centavos = centavos(valor) if valor not in (None, "") else (servico["preco_centavos"] if servico else 0)
+            if not com_valores:
+                valor_centavos = 0
             descricao = _texto(item.get("descricao") or (servico["nome"] if servico else ""), "descrição do item", maximo=200)
             itens.append((servico["id"] if servico else None, descricao, quantidade, valor_centavos))
         subtotal = sum(int(round(q * v)) for _s, _d, q, v in itens)
-        desconto = centavos(dados.get("desconto", 0))
+        desconto = centavos(dados.get("desconto", 0)) if com_valores else 0
         if desconto > subtotal:
             raise ErroNegocio("O desconto não pode ser maior que o valor dos itens.")
         validade = _data(dados.get("validade") or (date.today() + timedelta(days=7)).isoformat(), "validade")
@@ -204,21 +219,27 @@ class ComercialMixin:
         )
         if status in ("aprovado", "recusado"):
             self.disparar_evento(orcamento["empresa_id"], f"orcamento.{status}", {"id": orcamento["id"], "numero": orcamento["numero"]})
+            nome_doc, sigla = self._rotulo_solicitacao()
+            valor_txt = f" de {moeda(orcamento['total_centavos'])}" if self._com_valores(orcamento["empresa_id"]) else ""
+            situacao = ("aprovada" if status == "aprovado" else "recusada") if sigla == "SOL" else status
             self._novo_alerta(orcamento["empresa_id"], f"orcamento:{orcamento['id']}:{status}", "orcamento",
                               "info" if status == "aprovado" else "atencao",
-                              f"Orçamento ORC-{orcamento['numero']} {'aprovado' if status == 'aprovado' else 'recusado'}",
-                              f"{orcamento.get('contato_nome', 'O cliente')} {'aprovou' if status == 'aprovado' else 'recusou'} o orçamento de {moeda(orcamento['total_centavos'])}.",
+                              f"{nome_doc} {sigla}-{orcamento['numero']} {situacao}",
+                              f"{orcamento.get('contato_nome', 'A pessoa')} {'aprovou' if status == 'aprovado' else 'recusou'} {'a solicitação' if sigla == 'SOL' else 'o orçamento'}{valor_txt}.",
                               orcamento["id"])
 
     def texto_orcamento(self, orcamento: dict, config: dict) -> str:
-        linhas = [f"*{config['empresa_nome']}* — Orçamento ORC-{orcamento['numero']}", ""]
+        nome_doc, sigla = self._rotulo_solicitacao()
+        com_valores = self._com_valores(orcamento["empresa_id"])
+        linhas = [f"*{config['empresa_nome']}* — {nome_doc} {sigla}-{orcamento['numero']}", ""]
         for item in orcamento["itens"]:
             qtd = f"{item['quantidade']:g}".replace(".", ",")
-            linhas.append(f"• {item['descricao']} — {qtd} x {moeda(item['valor_unit_centavos'])}")
-        if orcamento["desconto_centavos"]:
+            linhas.append(f"• {item['descricao']} — {qtd} x {moeda(item['valor_unit_centavos'])}" if com_valores
+                          else f"• {item['descricao']}" + (f" ({qtd})" if item["quantidade"] != 1 else ""))
+        if com_valores and orcamento["desconto_centavos"]:
             linhas.append(f"Desconto: {moeda(orcamento['desconto_centavos'])}")
-        linhas += ["", f"*Total: {moeda(orcamento['total_centavos'])}*",
-                   f"Validade: {datetime.fromisoformat(orcamento['validade']).strftime('%d/%m/%Y')}"]
+        linhas += [""] + ([f"*Total: {moeda(orcamento['total_centavos'])}*"] if com_valores else []) + [
+            f"{'Prazo' if sigla == 'SOL' else 'Validade'}: {datetime.fromisoformat(orcamento['validade']).strftime('%d/%m/%Y')}"]
         if orcamento.get("descricao"):
             linhas += ["", orcamento["descricao"]]
         return "\n".join(linhas)
@@ -262,27 +283,35 @@ class ComercialMixin:
         config = self.obter_config(ator.empresa)
         e = html.escape
         logo = f'<img class="logo" src="{e(config["logo"])}" alt="">' if config.get("logo") else ""
+        nome_doc, sigla = self._rotulo_solicitacao()
+        com_valores = self._com_valores(ator.empresa)
         partes = []
         for item in orcamento["itens"]:
             quantidade = f"{item['quantidade']:g}".replace(".", ",")
             total_item = moeda(int(round(item["quantidade"] * item["valor_unit_centavos"])))
             partes.append(
                 f"<tr><td>{e(item['descricao'])}</td><td class='n'>{e(quantidade)}</td>"
-                f"<td class='n'>{e(moeda(item['valor_unit_centavos']))}</td><td class='n'>{e(total_item)}</td></tr>"
+                + (f"<td class='n'>{e(moeda(item['valor_unit_centavos']))}</td><td class='n'>{e(total_item)}</td>" if com_valores else "")
+                + "</tr>"
             )
         linhas = "".join(partes)
         validade = datetime.fromisoformat(orcamento["validade"]).strftime("%d/%m/%Y")
         emissao = (para_datahora(orcamento["criado_em"]) or datetime.now(timezone.utc)).strftime("%d/%m/%Y")
         desconto = f"<tr><td colspan=3>Desconto</td><td class='n'>- {e(moeda(orcamento['desconto_centavos']))}</td></tr>" if orcamento["desconto_centavos"] else ""
-        return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>ORC-{orcamento['numero']}</title>
+        if com_valores:
+            cabecalho = "<th>Item</th><th class='n'>Qtd.</th><th class='n'>Valor unit.</th><th class='n'>Total</th>"
+            rodape = (f"<tfoot><tr><td colspan=3>Subtotal</td><td class='n'>{e(moeda(orcamento['subtotal_centavos']))}</td></tr>{desconto}"
+                      f"<tr class=\"total\"><td colspan=3>Total</td><td class='n'>{e(moeda(orcamento['total_centavos']))}</td></tr></tfoot>")
+        else:
+            cabecalho, rodape = "<th>Item</th><th class='n'>Qtd.</th>", ""
+        return f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>{sigla}-{orcamento['numero']}</title>
 <link rel="stylesheet" href="/static/css/impressao.css"></head><body>
 <header>{logo}<div><h1>{e(config['empresa_nome'])}</h1><p>{e(config['nome_sistema'])}</p></div>
-<div class="num"><b>Orçamento ORC-{orcamento['numero']}</b><br>Emissão: {emissao}<br>Validade: {validade}</div></header>
-<section><h2>Cliente</h2><p><b>{e(orcamento['contato_nome'])}</b><br>{e(orcamento.get('contato_telefone') or '')} {e(orcamento.get('contato_email') or '')}</p></section>
+<div class="num"><b>{nome_doc} {sigla}-{orcamento['numero']}</b><br>Emissão: {emissao}<br>{"Prazo" if sigla == "SOL" else "Validade"}: {validade}</div></header>
+<section><h2>{"Pessoa" if sigla == "SOL" else "Cliente"}</h2><p><b>{e(orcamento['contato_nome'])}</b><br>{e(orcamento.get('contato_telefone') or '')} {e(orcamento.get('contato_email') or '')}</p></section>
 {f"<section><h2>Descrição</h2><p>{e(orcamento['descricao'])}</p></section>" if orcamento.get('descricao') else ''}
-<table><thead><tr><th>Item</th><th class='n'>Qtd.</th><th class='n'>Valor unit.</th><th class='n'>Total</th></tr></thead>
-<tbody>{linhas}</tbody><tfoot><tr><td colspan=3>Subtotal</td><td class='n'>{e(moeda(orcamento['subtotal_centavos']))}</td></tr>{desconto}
-<tr class="total"><td colspan=3>Total</td><td class='n'>{e(moeda(orcamento['total_centavos']))}</td></tr></tfoot></table>
+<table><thead><tr>{cabecalho}</tr></thead>
+<tbody>{linhas}</tbody>{rodape}</table>
 <p class="rodape">Situação: {e(orcamento['status'].replace('_', ' '))}. Documento gerado pelo {e(config['nome_sistema'])}.</p>
 <p class="acoes"><button id="imprimir">Salvar como PDF / Imprimir</button></p>
 <script src="/static/js/impressao.js"></script></body></html>"""

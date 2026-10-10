@@ -187,7 +187,7 @@ App.abrirContato = async function abrirContato(id, aoSalvar) {
     extra.append(h("h3", { text: "Histórico" }),
       h("div", { class: "grade duas" },
         h("div", null, h("div", { class: "rotulo", text: "Atendimentos" }), c.conversas.length ? c.conversas.map((x) => h("div", { class: "item clicavel", on: { click: () => { document.querySelector(".modal").remove(); navegar("chat", x.id); } } }, h("span", { text: `#${x.numero} • ${CANAIS[x.canal] || x.canal} • ${data(x.criada_em)}` }), selo(x.status))) : h("div", { class: "vazio", text: "Sem atendimentos." })),
-        h("div", null, h("div", { class: "rotulo", text: "Orçamentos" }), c.orcamentos.length ? c.orcamentos.map((o) => h("div", { class: "item" }, h("span", { text: `ORC-${o.numero} • ${moeda(o.total_centavos)}` }), selo(o.status))) : h("div", { class: "vazio", text: "Sem orçamentos." }))));
+        h("div", null, h("div", { class: "rotulo", text: "Orçamentos" }), c.orcamentos.length ? c.orcamentos.map((o) => h("div", { class: "item" }, h("span", { text: `${sigla()}-${o.numero}` + (comValores() ? ` • ${moeda(o.total_centavos)}` : "") }), selo(o.status))) : h("div", { class: "vazio", text: "Sem orçamentos." }))));
   }
   const acoesModal = [{ texto: "Fechar" }];
   if (!novo && pode("contatos", "excluir")) acoesModal.unshift({ texto: "Remover dados (LGPD)", classe: "perigo", fecha: false, acao: async (fechar) => {

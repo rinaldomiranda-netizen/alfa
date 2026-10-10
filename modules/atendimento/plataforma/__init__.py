@@ -16,7 +16,7 @@ from .nucleo import Ator, Conflito, ErroNegocio, NaoAutenticado, NaoEncontrado, 
 from .permissoes import SemPermissao
 from .sistema import SistemaMixin
 
-VERSAO = "5.3.0"
+VERSAO = "5.4.0"
 
 
 class Plataforma(NucleoMixin, ConversasMixin, FluxosMixin, ComercialMixin, CanaisMixin, GestaoMixin, IgrejaMixin, SistemaMixin):

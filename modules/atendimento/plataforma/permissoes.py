@@ -56,6 +56,8 @@ MATRIZ: dict[str, dict[str, tuple[str, ...]]] = {
     "empresas": {"ver": ("owner",), "criar": ("owner",), "editar": ("owner",)},
     "portal": {"ver": ("cliente",), "decidir_orcamento": ("cliente",), "mensagem": ("cliente",)},
     "recepcao": {"usar": EQUIPE},
+    # Valores em dinheiro (preços, totais, descontos) — a função pode ser desligada por igreja pelo RMD Desenvolvedor.
+    "valores": {"ver": EQUIPE + ("cliente",)},
     # RMD Atendimento Church
     "visitantes": {"ver": EQUIPE, "criar": EQUIPE, "editar": EQUIPE},
     "oracoes": {"ver": EQUIPE, "criar": EQUIPE, "editar": EQUIPE, "pastoral": GESTAO},

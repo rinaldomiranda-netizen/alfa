@@ -10,6 +10,10 @@ function paraCentavos(texto) {
   return Number.isFinite(n) ? Math.round(n * 100) : NaN;
 }
 function reais(centavos) { return ((centavos || 0) / 100).toFixed(2).replace(".", ","); }
+/* Valores em dinheiro: função que o RMD Desenvolvedor liga/desliga por cliente (na igreja começa desligada). */
+function comValores() { return pode("valores", "ver"); }
+/* Sigla do documento: na igreja "SOL" (Solicitação), nas empresas "ORC" (Orçamento). */
+function sigla() { return document.documentElement.dataset.edicao === "church" ? "SOL" : "ORC"; }
 
 App.editarOrcamento = async function editarOrcamento(id, inicial = {}, aoSalvar) {
   const [contatos, servicos] = await Promise.all([api("/api/contatos"), api("/api/servicos?ativos=1")]);
@@ -26,7 +30,8 @@ App.editarOrcamento = async function editarOrcamento(id, inicial = {}, aoSalvar)
   const itens = h("div");
   const totalEl = h("b", { class: "valor", style: { fontSize: "22px" } });
   const desconto = entrada("desconto", reais(o.desconto_centavos), { inputmode: "decimal", disabled: bloqueado });
-  const opcoesServico = [["", "— item livre —"], ...servicos.map((s) => [s.id, `${s.nome} (${moeda(s.preco_centavos)})`])];
+  const valores = comValores();
+  const opcoesServico = [["", "— item livre —"], ...servicos.map((s) => [s.id, valores ? `${s.nome} (${moeda(s.preco_centavos)})` : s.nome])];
   const linhaItem = (it = {}) => {
     const serv = seletor("servico_id", opcoesServico, it.servico_id || "", { disabled: bloqueado });
     const desc = entrada("descricao", it.descricao || "", { placeholder: "Descrição", disabled: bloqueado });
@@ -34,15 +39,15 @@ App.editarOrcamento = async function editarOrcamento(id, inicial = {}, aoSalvar)
     const valor = entrada("valor_unit", it.valor_unit_centavos !== undefined ? reais(it.valor_unit_centavos) : "", { inputmode: "decimal", placeholder: "0,00", disabled: bloqueado });
     serv.addEventListener("change", () => { const s = servicos.find((x) => x.id === serv.value); if (s) { desc.value = s.nome; valor.value = reais(s.preco_centavos); } recalcular(); });
     [qtd, valor].forEach((e) => e.addEventListener("input", recalcular));
-    const linha = h("div", { class: "formulario item-orc", style: { gridTemplateColumns: "1.3fr 1.5fr .6fr .8fr auto", alignItems: "end", marginBottom: "6px" } },
-      campo("Serviço", serv), campo("Descrição", desc), campo("Qtd.", qtd), campo("Valor unit. (R$)", valor),
+    const linha = h("div", { class: "formulario item-orc", style: { gridTemplateColumns: valores ? "1.3fr 1.5fr .6fr .8fr auto" : "1.3fr 1.5fr .6fr auto", alignItems: "end", marginBottom: "6px" } },
+      campo("Serviço", serv), campo("Descrição", desc), campo("Qtd.", qtd), valores ? campo("Valor unit. (R$)", valor) : null,
       bloqueado ? h("span") : h("button", { class: "btn pequeno perigo", type: "button", title: "Remover item", text: "✕", on: { click: () => { linha.remove(); recalcular(); } } }));
     itens.append(linha);
   };
   function lerItens() {
     return [...itens.querySelectorAll(".item-orc")].map((l) => {
       const d = lerFormulario(l);
-      return { servico_id: d.servico_id || null, descricao: d.descricao, quantidade: d.quantidade, valor_unit: d.valor_unit };
+      return { servico_id: d.servico_id || null, descricao: d.descricao, quantidade: d.quantidade, valor_unit: valores ? d.valor_unit : "" };
     });
   }
   function recalcular() {
@@ -59,9 +64,9 @@ App.editarOrcamento = async function editarOrcamento(id, inicial = {}, aoSalvar)
     campo("Descrição", areaTexto("descricao", o.descricao || "", { disabled: bloqueado }), null, true));
   const conteudo = h("div", null, form, h("h3", { text: "Itens" }), itens,
     bloqueado ? null : h("button", { class: "btn pequeno", type: "button", text: "+ Adicionar item", on: { click: () => { linhaItem(); recalcular(); } } }),
-    h("div", { class: "formulario", style: { marginTop: "12px", alignItems: "end" } }, campo("Desconto (R$)", desconto), campo("Total", totalEl)));
+    valores ? h("div", { class: "formulario", style: { marginTop: "12px", alignItems: "end" } }, campo("Desconto (R$)", desconto), campo("Total", totalEl)) : null);
   const salvar = async () => {
-    const dados = { ...lerFormulario(form), contato_id: contato.value, conversa_id: o.conversa_id, itens: lerItens(), desconto: desconto.value };
+    const dados = { ...lerFormulario(form), contato_id: contato.value, conversa_id: o.conversa_id, itens: lerItens(), desconto: valores ? desconto.value : 0 };
     const r = await api(id ? "/api/orcamentos/" + id : "/api/orcamentos", { metodo: id ? "PUT" : "POST", dados });
     id = r.id; return r;
   };
@@ -75,7 +80,7 @@ App.editarOrcamento = async function editarOrcamento(id, inicial = {}, aoSalvar)
     else toast("Orçamento enviado pelo WhatsApp.");
     if (aoSalvar) aoSalvar();
   } });
-  modal({ titulo: id ? `Orçamento ORC-${o.numero}` : "Novo orçamento", subtitulo: "Os valores são conferidos e calculados pelo servidor.", conteudo, acoes, larga: true });
+  modal({ titulo: id ? `Orçamento ${sigla()}-${o.numero}` : "Novo orçamento", subtitulo: valores ? "Os valores são conferidos e calculados pelo servidor." : "", conteudo, acoes, larga: true });
 };
 
 registrarTela("quotes", {
@@ -86,10 +91,10 @@ registrarTela("quotes", {
     const recarregar = async () => {
       const itens = await api("/api/orcamentos?status=" + filtro.value);
       limpar(area).append(tabela([
-        { titulo: "Nº", valor: (o) => "ORC-" + o.numero },
+        { titulo: "Nº", valor: (o) => sigla() + "-" + o.numero },
         { titulo: "Nome", valor: (o) => o.contato_nome },
         { titulo: "Serviço", valor: (o) => o.servicos || "—" },
-        { titulo: "Total", valor: (o) => moeda(o.total_centavos), num: true },
+        ...(comValores() ? [{ titulo: "Total", valor: (o) => moeda(o.total_centavos), num: true }] : []),
         { titulo: "Validade", valor: (o) => data(o.validade) },
         { titulo: "Status", valor: (o) => selo(o.status) },
         { titulo: "", valor: (o) => acoesStatus(o) },
@@ -119,7 +124,7 @@ registrarTela("services", {
     const editar = (s) => {
       const form = h("div", { class: "formulario" },
         campo("Serviço", entrada("nome", s ? s.nome : "")), campo("Categoria", entrada("categoria", s ? s.categoria || "" : "")),
-        campo("Preço (R$)", entrada("preco", s ? reais(s.preco_centavos) : "", { inputmode: "decimal", placeholder: "0,00" })),
+        comValores() ? campo("Preço (R$)", entrada("preco", s ? reais(s.preco_centavos) : "", { inputmode: "decimal", placeholder: "0,00" })) : null,
         campo("Prazo / SLA (horas)", entrada("sla_horas", s && s.sla_horas ? s.sla_horas : "", { type: "number", min: 1 })),
         campo("Descrição", areaTexto("descricao", s ? s.descricao || "" : ""), null, true), marcador("ativo", s ? s.ativo : true, "Ativo (aparece nos orçamentos)"));
       modal({ titulo: s ? "Editar serviço" : "Novo serviço", conteudo: form, acoes: [{ texto: "Cancelar" }, { texto: "Salvar", classe: "primario", acao: async () => {
@@ -129,7 +134,7 @@ registrarTela("services", {
     if (pode("servicos", "criar")) acoes.append(h("button", { class: "btn primario", type: "button", text: "+ Novo serviço", on: { click: () => editar(null) } }));
     el.append(h("div", { class: "cartao" }, tabela([
       { titulo: "Serviço", valor: (s) => s.nome }, { titulo: "Categoria", valor: (s) => s.categoria || "—" },
-      { titulo: "Preço", valor: (s) => moeda(s.preco_centavos), num: true }, { titulo: "SLA", valor: (s) => (s.sla_horas ? s.sla_horas + "h" : "—") },
+      ...(comValores() ? [{ titulo: "Preço", valor: (s) => moeda(s.preco_centavos), num: true }] : []), { titulo: "SLA", valor: (s) => (s.sla_horas ? s.sla_horas + "h" : "—") },
       { titulo: "Status", valor: (s) => selo(s.ativo ? "ativo" : "inativo") },
     ], itens, pode("servicos", "editar") ? editar : null)));
   },

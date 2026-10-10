@@ -8,6 +8,7 @@ Só números agregados (quantos usuários, quantas igrejas) — nunca nomes, con
 """
 from __future__ import annotations
 
+import os
 import time
 
 from . import seguranca
@@ -24,12 +25,20 @@ RECURSOS_LIGAVEIS = (
     ("organizacao", "Organização (setores, campos e igrejas)"),
     ("agenda", "Agenda"),
     ("orcamentos", "Solicitações"),
+    ("servicos", "Tipos de solicitação / serviços"),
+    ("valores", "Valores em dinheiro (preços, totais e descontos)"),
+    ("alertas", "Alertas"),
     ("fluxos", "Fluxos (robô de atendimento)"),
     ("whatsapp", "WhatsApp"),
     ("api", "API & Webhooks"),
     ("relatorios", "Relatórios"),
 )
 CHAVES_RECURSOS = tuple(r for r, _ in RECURSOS_LIGAVEIS)
+
+
+def desligados_por_padrao() -> set[str]:
+    """Funções que começam DESLIGADAS até o RMD Desenvolvedor ligar. Na igreja não há valores em dinheiro."""
+    return {"valores"} if os.getenv("RMD_EDICAO", "").strip().lower() == "church" else set()
 
 
 def _limpar_mensagem(texto: str) -> str:
@@ -43,9 +52,12 @@ class SistemaMixin:
         if not empresa_id:
             return set()
         try:
-            return {l["recurso"] for l in self.banco.todos("SELECT recurso FROM empresa_recursos WHERE empresa_id=? AND ligado=0", (empresa_id,))}
+            linhas = self.banco.todos("SELECT recurso, ligado FROM empresa_recursos WHERE empresa_id=?", (empresa_id,))
         except Exception:  # noqa: BLE001 - banco antigo sem a tabela ainda
-            return set()
+            return desligados_por_padrao()
+        escolhidos = {l["recurso"]: l["ligado"] for l in linhas}
+        return ({r for r, ligado in escolhidos.items() if not ligado}
+                | {r for r in desligados_por_padrao() if r not in escolhidos})
 
     def salvar_recursos(self, ator: Ator, empresa_id: str, ligados: dict) -> dict:
         ator.exigir("empresas", "editar")

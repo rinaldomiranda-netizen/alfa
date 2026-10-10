@@ -842,6 +842,8 @@ class Handler(BaseHTTPRequestHandler):
         d = self._corpo()
         p = plataforma()
         empresa = p.criar_empresa(d.get("nome"), d.get("plano") or "essencial", ator=self.ator)
+        if EDICAO == "church":
+            p.garantir_tipos_solicitacao(empresa["id"])
         resposta = {"empresa": empresa, "admin": None}
         if d.get("admin_email") and EDICAO == "church":
             resposta["admin"] = {"usuario": p.criar_admin_da_sede(self.ator, empresa["id"], d.get("admin_nome"), d.get("admin_email")),
@@ -1007,6 +1009,11 @@ class Servidor(ThreadingHTTPServer):
 
 
 def criar_servidor(host: str = HOST, porta: int = PORT) -> ThreadingHTTPServer:
+    if EDICAO == "church":
+        try:
+            plataforma().preparar_igrejas()
+        except Exception:  # noqa: BLE001 - nunca impede o sistema de abrir
+            traceback.print_exc()
     servidor = Servidor((host, porta), Handler)
     servidor.daemon_threads = True
     parar = threading.Event()

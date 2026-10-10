@@ -278,14 +278,14 @@ registrarTela("portal", {
     async function enviar(valor) { const t = (valor || texto.value).trim(); if (!t) return; try { desenhar(await api("/api/portal/mensagens", { dados: { texto: t } })); texto.value = ""; } catch (e) { falha(e); } }
     texto.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviar(); } });
     desenhar(conversa);
-    const decidir = async (o, aprovar) => { if (!(await confirmar(aprovar ? `Aprovar o orçamento ORC-${o.numero} de ${moeda(o.total_centavos)}?` : `Recusar o orçamento ORC-${o.numero}?`, aprovar ? "Aprovar" : "Recusar", aprovar ? "sucesso" : "perigo"))) return;
+    const decidir = async (o, aprovar) => { if (!(await confirmar(aprovar ? `Aprovar o orçamento ${sigla()}-${o.numero}${comValores() ? " de " + moeda(o.total_centavos) : ""}?` : `Recusar o orçamento ${sigla()}-${o.numero}?`, aprovar ? "Aprovar" : "Recusar", aprovar ? "sucesso" : "perigo"))) return;
       try { await api(`/api/portal/orcamentos/${o.id}/decisao`, { dados: { aprovar } }); toast(aprovar ? "Orçamento aprovado. A empresa foi avisada." : "Orçamento recusado."); mostrarTela(); } catch (e) { falha(e); } };
     el.append(h("div", { class: "grade colunas" },
       h("div", { class: "cartao" }, h("h2", { text: "Conversa com a empresa" }), mensagens, h("div", { class: "compositor", style: { padding: "12px 0 0", borderTop: 0 } }, texto, h("button", { class: "btn primario", type: "button", text: "Enviar", on: { click: () => enviar() } })),
         outras.length ? h("div", null, h("h3", { text: "Atendimentos anteriores" }), outras.map((c) => h("div", { class: "item" }, h("span", { text: `#${c.numero} • ${CANAIS[c.canal] || c.canal} • ${data(c.criada_em)}` }), selo(c.status)))) : null),
       h("div", null,
         h("div", { class: "cartao" }, h("h2", { text: "Meus orçamentos" }), d.orcamentos.length ? d.orcamentos.map((o) => h("div", { class: "item" },
-          h("div", null, h("b", { text: `ORC-${o.numero} • ${moeda(o.total_centavos)}` }), h("div", { class: "suave", text: `Validade ${data(o.validade)}${o.descricao ? " • " + o.descricao.slice(0, 60) : ""}` })),
+          h("div", null, h("b", { text: `${sigla()}-${o.numero}` + (comValores() ? ` • ${moeda(o.total_centavos)}` : "") }), h("div", { class: "suave", text: `Validade ${data(o.validade)}${o.descricao ? " • " + o.descricao.slice(0, 60) : ""}` })),
           h("div", { class: "acoes" }, selo(o.status), h("a", { class: "btn pequeno", href: `/orcamentos/${o.id}/imprimir`, target: "_blank", rel: "noopener", text: "Ver" }),
             ["enviado", "em_analise"].includes(o.status) ? [h("button", { class: "btn pequeno sucesso", type: "button", text: "Aprovar", on: { click: () => decidir(o, true) } }), h("button", { class: "btn pequeno perigo", type: "button", text: "Recusar", on: { click: () => decidir(o, false) } })] : null))) : h("div", { class: "vazio", text: "Nenhum orçamento." })),
         h("div", { class: "cartao", style: { marginTop: "15px" } }, h("h2", { text: "Meus agendamentos" }), d.agenda.length ? d.agenda.map((a) => h("div", { class: "item" }, h("div", null, h("b", { text: a.titulo }), h("div", { class: "suave", text: dataHora(a.inicio) })), selo(a.status))) : h("div", { class: "vazio", text: "Nenhum agendamento." })))));

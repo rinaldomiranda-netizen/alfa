@@ -153,7 +153,8 @@ registrarTela("reports", {
       h("div", { class: "cartao" }, h("div", { class: "linha-titulo" }, h("h2", { text: "Atendimento por canal" }), exportar("canais")),
         tabela([{ titulo: "Canal", valor: (x) => CANAIS[x.canal] || x.canal }, { titulo: "Atendimentos", valor: (x) => x.atendimentos, num: true }, { titulo: "Resolvidos", valor: (x) => x.resolvidos, num: true }], r.canais)),
       h("div", { class: "cartao" }, h("div", { class: "linha-titulo" }, h("h2", { text: "Orçamentos e conversão" }), exportar("orcamentos")),
-        tabela([{ titulo: "Situação", valor: (x) => selo(x.status) }, { titulo: "Quantidade", valor: (x) => x.quantidade, num: true }, { titulo: "Valor", valor: (x) => moeda(x.valor), num: true }], r.orcamentos)),
+        tabela([{ titulo: "Situação", valor: (x) => selo(x.status) }, { titulo: "Quantidade", valor: (x) => x.quantidade, num: true },
+          ...(comValores() ? [{ titulo: "Valor", valor: (x) => moeda(x.valor), num: true }] : [])], r.orcamentos)),
       h("div", { class: "cartao" }, h("div", { class: "linha-titulo" }, h("h2", { text: "Satisfação (CSAT)" }), exportar("csat")),
         h("div", { class: "barras" }, r.csat.map((c) => h("div", { class: "linha-barra" }, h("span", { text: "★".repeat(c.nota) }),
           h("div", { class: "barra" }, h("span", { style: { width: `${Math.round(100 * c.quantidade / maxCsat)}%` } })), h("span", { class: "suave", text: String(c.quantidade) })))))));
