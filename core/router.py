@@ -6,7 +6,8 @@ Fluxo: texto -> intenção -> parâmetros -> executor local.
 Regras:
   - Só comandos que o interpretador NÃO reconhece (intent
     DESCONHECIDO) seguem para o mecanismo de IA de fallback
-    (conversa livre). Comandos locais nunca são enviados para fora.
+    (conversa livre). Pesquisa externa acontece apenas em PESQUISAR_WEB;
+    comandos locais de mouse/teclado/programas não são enviados ao LLM.
   - VISUALIZAR/CAMERA são intenções locais reconhecidas, mas cuja
     EXECUÇÃO depende de IA multimodal (vision/vision.py) — é o caso
     de "comando que realmente precisa de IA" citado na especificação.
