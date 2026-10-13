@@ -252,6 +252,60 @@ class AgenteExecutor:
             mensagem_sucesso=f"Pronto. Abri o {programa_norm} e escrevi o texto pedido.",
         )
 
+    def fechar_aplicativo_generico(self, nome_bruto):
+        """Fecha um app instalado somente após a confirmação do Router.
+
+        Para aliases já autorizados, preserva a lógica existente. Para
+        outros nomes, aceita somente aliases exatos do catálogo de apps
+        instaláveis e compara os nomes reais de executável/processo.
+        """
+        import os
+        import re
+        import psutil
+        from agente import descoberta_apps
+        from security.permissions import PROGRAMAS_FECHAR
+
+        nome = re.sub(
+            r"^(?:(?:o|a|os|as)\s+)?(?:(?:aplicativo|programa|app)\s+)?",
+            "",
+            (nome_bruto or "").strip().lower(),
+        ).strip(" .,!?:;")
+        if not nome:
+            return "Não entendi qual programa você quer fechar."
+
+        # Mantém a whitelist de encerramento atual para os aliases
+        # legados; nenhuma aproximação de nome encerra processos.
+        if nome in PROGRAMAS_FECHAR:
+            resultado = self.registro.executar("fechar_aplicativo", programa=nome)
+            return resultado.mensagem
+
+        candidatos = descoberta_apps.NOMES_EXECUTAVEL.get(nome)
+        if not candidatos:
+            return f"Não tenho um método seguro configurado para fechar {nome}."
+
+        caminho = descoberta_apps.localizar_executavel(nome)
+        if not caminho:
+            return f"Não encontrei {nome} instalado neste computador."
+
+        nomes_processo = {os.path.basename(caminho).lower()}
+        nomes_processo.update(os.path.basename(item).lower() for item in candidatos)
+        encontrados = 0
+        for processo in psutil.process_iter(["name", "exe"]):
+            try:
+                nome_processo = (processo.info.get("name") or "").lower()
+                exe_processo = os.path.basename(processo.info.get("exe") or "").lower()
+                if nome_processo in nomes_processo or exe_processo in nomes_processo:
+                    processo.terminate()
+                    encontrados += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            except Exception:
+                continue
+
+        if encontrados:
+            return f"Fechei {nome}. Encerrei {encontrados} processo(s) correspondente(s)."
+        return f"{nome} não está aberto."
+
     def abrir_aplicativo_generico(self, nome_bruto):
         """
         Fallback para "abra o X" quando X não está na whitelist fixa

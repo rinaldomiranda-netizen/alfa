@@ -175,5 +175,45 @@ class TestIntentEngine(unittest.TestCase):
         self.assertEqual(resultado["intent"], "PRESENCA")
 
 
+    def test_pesquisar_na_internet_gira_intencao_com_consulta(self):
+        resultado = self.engine.interpretar(
+            "Beta, pesquise na internet sobre a capital do Chile"
+        )
+        self.assertEqual(resultado["intent"], "PESQUISAR_WEB")
+        self.assertEqual(resultado["consulta"], "a capital do Chile")
+
+    def test_pergunta_atual_pede_pesquisa_web(self):
+        resultado = self.engine.interpretar("Quem é o presidente do Chile?")
+        self.assertEqual(resultado["intent"], "PESQUISAR_WEB")
+        self.assertIn("Chile", resultado["consulta"])
+
+    def test_fechar_word_preserva_alvo_bruto_para_descoberta(self):
+        resultado = self.engine.interpretar("feche o Word")
+        self.assertEqual(resultado["intent"], "FECHAR")
+        self.assertIsNone(resultado["programa"])
+        self.assertEqual(resultado["programa_bruto"], "word")
+
+    def test_fechar_calculadora_preserva_programa_conhecido(self):
+        resultado = self.engine.interpretar("feche a calculadora")
+        self.assertEqual(resultado["intent"], "FECHAR")
+        self.assertEqual(resultado["programa"], "calculadora")
+        self.assertEqual(resultado["programa_bruto"], "calculadora")
+
+
+    def test_pergunta_factual_generica_vai_para_pesquisa_web(self):
+        resultado = self.engine.interpretar("Quem inventou o telefone?")
+        self.assertEqual(resultado["intent"], "PESQUISAR_WEB")
+        self.assertEqual(resultado["consulta"], "Quem inventou o telefone?")
+
+    def test_perguntas_conhecidas_da_beta_continuam_locais(self):
+        resultado = self.engine.interpretar("Quem é você?")
+        self.assertEqual(resultado["intent"], "IDENTIDADE_QUEM_E_VOCE")
+
+
+    def test_pergunta_com_dado_pessoal_nao_e_enviada_para_pesquisa_web(self):
+        resultado = self.engine.interpretar("Qual é o meu nome?")
+        self.assertEqual(resultado["intent"], "DESCONHECIDO")
+
+
 if __name__ == "__main__":
     unittest.main()
