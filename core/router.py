@@ -52,8 +52,10 @@ def _descreve_intent(intent):
     kind = intent.get("intent")
     programa = intent.get("programa")
 
-    if kind == "FECHAR" and programa:
-        return f"fechar {programa}"
+    if kind == "FECHAR":
+        alvo = programa or intent.get("programa_bruto")
+        if alvo:
+            return f"fechar {alvo}"
     if kind == "FECHAR_JANELA":
         return "fechar a janela ativa"
     if kind == "DESLIGAR_COMPUTADOR":
@@ -101,7 +103,15 @@ class Router:
         self.pendente = None
 
         if any(palavra in texto_normalizado for palavra in CONFIRMACAO_POSITIVA):
-            resultado = self.executor.executar(pendente)
+            if (
+                pendente.get("intent") == "FECHAR"
+                and self.agente is not None
+                and (pendente.get("programa") or pendente.get("programa_bruto"))
+            ):
+                alvo = pendente.get("programa") or pendente.get("programa_bruto")
+                resultado = self.agente.fechar_aplicativo_generico(alvo)
+            else:
+                resultado = self.executor.executar(pendente)
             return resultado, pendente
 
         if any(palavra in texto_normalizado for palavra in CONFIRMACAO_NEGATIVA):
@@ -124,6 +134,13 @@ class Router:
 
         intent = self.intent_engine.interpretar(texto, texto_original)
         kind = intent.get("intent")
+
+        if kind == "PESQUISAR_WEB":
+            if self.aviso_previo:
+                self.aviso_previo(DEMORADA)
+            from core import web_search
+            _sucesso, mensagem = web_search.pesquisar(intent.get("consulta", ""))
+            return mensagem, intent
 
         if kind == "DESCONHECIDO":
             # Antes da conversa livre em texto puro, dá ao LLM local
@@ -204,17 +221,13 @@ class Router:
         if kind == "ROLAR_ATE_ENCONTRAR" and self.agente is not None:
             return self.agente.rolar_ate_encontrar(intent.get("alvo")), intent
 
-        if kind == "ABRIR" and not intent.get("programa") and self.agente is not None:
-            # A whitelist fixa antiga (security/permissions.py:
-            # PROGRAMAS_ABRIR) não reconheceu o nome pedido — em vez de
-            # desistir ("Não entendi qual programa..."), tenta a
-            # descoberta real de aplicativos do agente antes de
-            # responder. Só entra aqui quando "programa" veio vazio;
-            # qualquer programa já reconhecido pela whitelist segue o
-            # caminho de sempre, sem mudança nenhuma.
+        if kind == "ABRIR" and self.agente is not None:
+            # Descobre o caminho real para todos os programas: a lista fixa
+            # podia dizer que abriu mesmo quando o executável não resolvia.
             if self.aviso_previo:
                 self.aviso_previo(DEMORADA)
-            return self.agente.abrir_aplicativo_generico(intent.get("programa_bruto")), intent
+            alvo = intent.get("programa") or intent.get("programa_bruto")
+            return self.agente.abrir_aplicativo_generico(alvo), intent
 
         if kind == "TAREFA_EXCEL_PROCURAR" and self.agente is not None:
             if self.aviso_previo:
@@ -240,7 +253,11 @@ class Router:
             # Sem programa identificado não há o que confirmar: deixa o
             # executor responder que não entendeu, sem travar em uma
             # pergunta de confirmação vazia.
-            if kind == "FECHAR" and not intent.get("programa"):
+            if (
+                kind == "FECHAR"
+                and not intent.get("programa")
+                and not intent.get("programa_bruto")
+            ):
                 resultado = self.executor.executar(intent)
                 return resultado, intent
 
