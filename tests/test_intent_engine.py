@@ -175,5 +175,30 @@ class TestIntentEngine(unittest.TestCase):
         self.assertEqual(resultado["intent"], "PRESENCA")
 
 
+    def test_pesquisar_na_internet_gira_intencao_com_consulta(self):
+        resultado = self.engine.interpretar(
+            "Beta, pesquise na internet sobre a capital do Chile"
+        )
+        self.assertEqual(resultado["intent"], "PESQUISAR_WEB")
+        self.assertEqual(resultado["consulta"], "a capital do Chile")
+
+    def test_pergunta_atual_pede_pesquisa_web(self):
+        resultado = self.engine.interpretar("Quem é o presidente do Chile?")
+        self.assertEqual(resultado["intent"], "PESQUISAR_WEB")
+        self.assertIn("Chile", resultado["consulta"])
+
+    def test_fechar_word_preserva_alvo_bruto_para_descoberta(self):
+        resultado = self.engine.interpretar("feche o Word")
+        self.assertEqual(resultado["intent"], "FECHAR")
+        self.assertIsNone(resultado["programa"])
+        self.assertEqual(resultado["programa_bruto"], "word")
+
+    def test_fechar_calculadora_preserva_programa_conhecido(self):
+        resultado = self.engine.interpretar("feche a calculadora")
+        self.assertEqual(resultado["intent"], "FECHAR")
+        self.assertEqual(resultado["programa"], "calculadora")
+        self.assertEqual(resultado["programa_bruto"], "calculadora")
+
+
 if __name__ == "__main__":
     unittest.main()
