@@ -200,5 +200,15 @@ class TestIntentEngine(unittest.TestCase):
         self.assertEqual(resultado["programa_bruto"], "calculadora")
 
 
+    def test_pergunta_factual_generica_vai_para_pesquisa_web(self):
+        resultado = self.engine.interpretar("Quem inventou o telefone?")
+        self.assertEqual(resultado["intent"], "PESQUISAR_WEB")
+        self.assertEqual(resultado["consulta"], "Quem inventou o telefone?")
+
+    def test_perguntas_conhecidas_da_beta_continuam_locais(self):
+        resultado = self.engine.interpretar("Quem é você?")
+        self.assertEqual(resultado["intent"], "IDENTIDADE_QUEM_E_VOCE")
+
+
 if __name__ == "__main__":
     unittest.main()
