@@ -125,6 +125,19 @@ LOCALIZAR_REGEX = re.compile(
     r"(?:onde esta|encontre|localize)\s+(?:o|a)?\s*(?P<alvo>.+)"
 )
 
+# Pesquisa externa acionada explicitamente por voz, sem depender de um LLM
+# local para adivinhar se o usuário pediu fontes atuais.
+PESQUISAR_WEB_REGEX = re.compile(
+    r"\b(?:pesquise|pesquisar|pesquisa|busque|buscar|procure|procurar|consulte|consultar)\s+"
+    r"(?:(?:na|pela)\s+internet|na\s+web|online|no\s+google|em\s+sites)\s+"
+    r"(?:(?:sobre|por|a respeito de)\s+)?(?P<termo>.+)",
+    re.IGNORECASE,
+)
+PESQUISAR_SOBRE_REGEX = re.compile(
+    r"\b(?:pesquise|pesquisar|pesquisa)\s+sobre\s+(?P<termo>.+)",
+    re.IGNORECASE,
+)
+
 # Teclas avulsas, além das já tratadas como intents próprias
 # (ENTER/ESC/TAB/BACKSPACE) por serem as mais frequentes.
 TECLAS_NOMEADAS = {
@@ -433,6 +446,32 @@ class IntentEngine:
             "vai chover", "clima hoje", "qual e o clima", "tempo hoje",
         ]):
             return {"intent": "CONSULTAR_CLIMA", "confidence": 1.0}
+
+        # Pesquisa na web: frases explícitas e perguntas cujo resultado
+        # muda com o tempo usam fontes atuais; o módulo retorna falha
+        # honesta se não conseguir acessar o mecanismo de busca.
+        match_pesquisa = PESQUISAR_WEB_REGEX.search(texto_original)
+        if not match_pesquisa:
+            match_pesquisa = PESQUISAR_SOBRE_REGEX.search(texto_original)
+        if match_pesquisa and match_pesquisa.group("termo").strip():
+            return {
+                "intent": "PESQUISAR_WEB",
+                "confidence": 1.0,
+                "consulta": match_pesquisa.group("termo").strip(),
+            }
+
+        if _contains_any(c, [
+            "ultimas noticias", "noticias de hoje", "mais recente",
+            "cotacao atual", "cotacao do dolar", "preco atual", "preco hoje",
+            "presidente atual", "quem e o presidente", "quem e o primeiro ministro",
+            "quem e o governador", "quem e o prefeito", "quem ganhou",
+            "resultado de hoje", "agenda de hoje",
+        ]):
+            return {
+                "intent": "PESQUISAR_WEB",
+                "confidence": 1.0,
+                "consulta": texto_original.strip(),
+            }
 
         # -----------------------------------------------------------
         # IDENTIDADE INSTITUCIONAL DA BETA (ver core/personality.py) —
@@ -865,13 +904,19 @@ class IntentEngine:
                 "programa_bruto": resto,
             }
 
-        match_fechar = re.search(r"\b(?:feche|fechar|fecha)\b\s+(.+)", c)
-        if match_fechar or "encerre a " in c or "encerre o " in c:
-            return {
-                "intent": "FECHAR",
-                "confidence": 1.0,
-                "programa": _program(c),
-            }
+        match_fechar = re.search(
+            r"\b(?:feche|fechar|fecha|encerre|encerra|encerrar)\b\s+(?:(?:o|a|os|as)\s+)?(?P<alvo>.+)",
+            c,
+        )
+        if match_fechar:
+            alvo_bruto = match_fechar.group("alvo").strip()
+            if alvo_bruto:
+                return {
+                    "intent": "FECHAR",
+                    "confidence": 1.0,
+                    "programa": _program(c),
+                    "programa_bruto": alvo_bruto,
+                }
 
         # -----------------------------------------------------------
         # REFERÊNCIA CONVERSACIONAL SOLTA ("isso", "o segundo",
