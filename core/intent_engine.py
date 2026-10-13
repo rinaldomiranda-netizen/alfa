@@ -939,4 +939,19 @@ class IntentEngine:
                 "ordinal": _extrair_ordinal(c),
             }
 
+        # Perguntas factuais não cobertas pelos intents locais usam pesquisa web.
+        # Os casos conhecidos (identidade, hora, data, clima, saudações etc.)
+        # já foram tratados acima; só chega aqui o que ainda precisa de fonte.
+        pergunta_factual = re.match(
+            r"^\s*(?:beta[,:]?\s*)?(?:quem|qual|quais|como|quando|onde|aonde|quanto|quantos|quantas|por\s+que|porque|o\s+que|pra\s+que|para\s+que)\b",
+            texto_original.strip(),
+            re.IGNORECASE,
+        )
+        if pergunta_factual:
+            return {
+                "intent": "PESQUISAR_WEB",
+                "confidence": 0.85,
+                "consulta": texto_original.strip(),
+            }
+
         return {"intent": "DESCONHECIDO", "confidence": 0.0}
