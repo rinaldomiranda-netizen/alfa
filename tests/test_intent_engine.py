@@ -210,5 +210,10 @@ class TestIntentEngine(unittest.TestCase):
         self.assertEqual(resultado["intent"], "IDENTIDADE_QUEM_E_VOCE")
 
 
+    def test_pergunta_com_dado_pessoal_nao_e_enviada_para_pesquisa_web(self):
+        resultado = self.engine.interpretar("Qual é o meu nome?")
+        self.assertEqual(resultado["intent"], "DESCONHECIDO")
+
+
 if __name__ == "__main__":
     unittest.main()
