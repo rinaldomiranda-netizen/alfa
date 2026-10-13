@@ -47,6 +47,11 @@ def _localizar_e_focar_janela(palavras_chave):
     return True, titulo
 
 
+def _pesquisar_web_tool(termo):
+    from core import web_search
+    return web_search.pesquisar(termo)
+
+
 def _consultar_web(url):
     import re as _re
     import urllib.request
@@ -509,6 +514,14 @@ def construir_registro_padrao(executor):
         parametros={"url": "endereço a consultar"},
         categoria=CATEGORIA_BASIC,
         funcao=lambda url: _consultar_web(url),
+    ))
+
+    registro.registrar(Ferramenta(
+        nome="pesquisar_web",
+        descricao="Pesquisar um assunto na internet e devolver títulos, trechos e links de fontes",
+        parametros={"termo": "pergunta ou assunto a pesquisar na web"},
+        categoria=CATEGORIA_BASIC,
+        funcao=lambda termo: _pesquisar_web_tool(termo),
     ))
 
     _registrar_skills_office(registro)
