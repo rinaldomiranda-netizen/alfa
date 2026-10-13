@@ -941,7 +941,15 @@ class IntentEngine:
             texto_original.strip(),
             re.IGNORECASE,
         )
-        if pergunta_factual:
+        # Perguntas pessoais e potencialmente privadas ficam no fluxo local;
+        # só perguntas factuais genéricas são enviadas ao serviço de busca.
+        pergunta_privada = _contains_any(c, [
+            "meu nome", "meu endereco", "meu telefone", "minha senha",
+            "meus dados", "minha esposa", "meu marido", "minha familia",
+            "meus filhos", "meu remedio", "meu medicamento", "minha consulta",
+            "voce mora", "seu nome", "sua historia", "sua familia",
+        ])
+        if pergunta_factual and not pergunta_privada:
             return {
                 "intent": "PESQUISAR_WEB",
                 "confidence": 0.85,
