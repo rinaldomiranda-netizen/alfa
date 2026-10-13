@@ -837,12 +837,6 @@ class IntentEngine:
             "leia a tela", "leia isso", "descreva a tela", "descreva minha tela",
             "o que voce ve agora", "o que voce ve na tela",
             "ler minha tela", "ler a tela",
-            "visualize minha tela", "visualizar minha tela", "visualiza minha tela",
-            "visualiza a minha tela", "visualize a minha tela",
-            "veja minha tela", "veja a minha tela", "veja a tela",
-            "veja o que tem na minha tela", "veja o que tem na tela",
-            "olhe a tela", "olhe minha tela", "olhe a minha tela",
-            "o que tem na minha tela", "o que tem na tela",
             "o que aparece na tela", "o que aparece na minha tela",
             "o que esta aparecendo", "me diga o que esta na tela",
         ]):
