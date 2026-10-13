@@ -1,0 +1,53 @@
+name: Beta smoke tests
+
+on:
+  push:
+    paths:
+      - "core/intent_engine.py"
+      - "core/router.py"
+      - "core/web_search.py"
+      - "agente/orquestrador.py"
+      - "agente/registro_padrao.py"
+      - "security/permissions.py"
+      - "tests/test_intent_engine.py"
+      - "tests/test_router.py"
+      - "tests/test_web_search.py"
+      - "tests/test_agent_app_control.py"
+      - "tests/test_executor_novos_comandos.py"
+      - ".github/workflows/beta-smoke-tests.yml"
+  pull_request:
+    paths:
+      - "core/intent_engine.py"
+      - "core/router.py"
+      - "core/web_search.py"
+      - "agente/orquestrador.py"
+      - "agente/registro_padrao.py"
+      - "security/permissions.py"
+      - "tests/test_intent_engine.py"
+      - "tests/test_router.py"
+      - "tests/test_web_search.py"
+      - "tests/test_agent_app_control.py"
+      - "tests/test_executor_novos_comandos.py"
+      - ".github/workflows/beta-smoke-tests.yml"
+
+jobs:
+  beta-smoke:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyautogui psutil pillow pywinauto opencv-python-headless
+      - name: Run Beta intent, router, web and app-control tests
+        shell: pwsh
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m unittest tests.test_intent_engine tests.test_router tests.test_web_search tests.test_agent_app_control tests.test_executor_novos_comandos -v
