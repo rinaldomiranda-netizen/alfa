@@ -7,6 +7,7 @@ API:    /api/...     JSON. Sessão em cookie HttpOnly (ou cabeçalho Authorizati
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import mimetypes
 import os
@@ -65,6 +66,32 @@ def plataforma() -> Plataforma:
 ROTAS: list[tuple[str, re.Pattern, object, bool]] = []
 limite_senha = seguranca.LimiteChamadas(8)
 limite_2fa = seguranca.LimiteChamadas(8)
+
+
+def _base_convites_externos(h) -> str:
+    """Só emite convites externos quando a requisição veio do proxy HTTPS público.
+    Tokens gerados no banco local não existem no banco hospedado.
+    """
+    try:
+        if not h._proxy_confiavel() or not h.https():
+            return ""
+        base = (h.url_acesso() or "").rstrip("/")
+        from urllib.parse import urlparse
+        u = urlparse(base)
+        host = (u.hostname or "").lower().rstrip(".")
+        if u.scheme != "https" or not host or "." not in host or host == "localhost":
+            return ""
+        if host.endswith((".local", ".internal", ".localhost")):
+            return ""
+        try:
+            ip = ipaddress.ip_address(host)
+            if not ip.is_global:
+                return ""
+        except ValueError:
+            pass
+        return base
+    except Exception:
+        return ""
 
 
 class Arquivo:
@@ -375,6 +402,8 @@ def r_eu(h, p, a, q, c):
 
 @rota("POST", "/api/usuarios/{uid}/convite")
 def r_novo_convite(h, p, a, q, c, uid):
+    if not _base_convites_externos(h):
+        raise ErroNegocio("Convites externos só podem ser gerados no Sobrou+ público em HTTPS. Este ambiente local usa outro banco e produziria um link inválido.")
     return p.novo_convite(a, uid)
 
 
@@ -388,9 +417,9 @@ def _dados_envio_convite(h, p, a, c, uid):
     if convidado["id"] != uid:
         raise NaoAutenticado("Link de acesso inválido.")
     # Nunca reutilizar uma URL antiga enviada pelo navegador. O servidor é a fonte da URL atual.
-    base = (h.url_acesso() or "").rstrip("/")
+    base = _base_convites_externos(h)
     if not base:
-        raise ErroNegocio("Não foi possível determinar o endereço de acesso do Sobrou+.")
+        raise ErroNegocio("Convites externos só podem ser gerados no Sobrou+ público em HTTPS. Este ambiente local usa outro banco; abra o painel público para gerar um link válido.")
     caminho = f"/acesso?c={token}"
     link = base + caminho
     empresa = p.banco.um("SELECT nome FROM empresas WHERE id=?", (u["empresa_id"],)) if u.get("empresa_id") else None
@@ -467,17 +496,23 @@ def r_criador_testar(h, p, a, q, c):
 
 @rota("GET", "/api/rmd/testadores")
 def r_testadores(h, p, a, q, c):
-    return {**p.listar_testadores(a), "url_acesso": (h.url_acesso() or "").rstrip("/")}
+    return {**p.listar_testadores(a), "url_acesso": _base_convites_externos(h)}
 
 
 @rota("POST", "/api/rmd/testadores")
 def r_criar_testador(h, p, a, q, c):
-    return {**p.criar_testador(a, c), "url_acesso": (h.url_acesso() or "").rstrip("/")}
+    base = _base_convites_externos(h)
+    if not base:
+        raise ErroNegocio("Os cinco convites de parceiros precisam ser gerados no Sobrou+ público em HTTPS, no banco que validará os códigos. Este ambiente local não pode emitir links externos válidos.")
+    return {**p.criar_testador(a, c), "url_acesso": base}
 
 
 @rota("POST", "/api/rmd/testadores/{tid}/links")
 def r_links_testador(h, p, a, q, c, tid):
-    return {**p.novos_links_testador(a, tid), "url_acesso": (h.url_acesso() or "").rstrip("/")}
+    base = _base_convites_externos(h)
+    if not base:
+        raise ErroNegocio("Os novos convites precisam ser gerados no Sobrou+ público em HTTPS, usando o banco do servidor que vai validar os códigos.")
+    return {**p.novos_links_testador(a, tid), "url_acesso": base}
 
 
 @rota("POST", "/api/rmd/testadores/{tid}/ligar")
