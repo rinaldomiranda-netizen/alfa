@@ -7,7 +7,8 @@ set "SOBROU_PORTA=8095"
 set "SOBROU_ATRAS_DE_PROXY=1"
 set "SOBROU_URL_PUBLICA=https://maze-spider.runlocal.eu"
 where py >nul 2>nul && (set "PY=py -3") || (set "PY=python")
-%PY% -X utf8 web\iniciar.py
-echo.
-echo O Sobrou+ parou. Se apareceu erro acima, tire um print.
-pause
+%PY% -X utf8 web\iniciar_segundo_plano.py
+if errorlevel 1 (
+  echo Nao consegui iniciar o Sobrou+. Veja logs\sobrou_real_background.log.
+  pause
+)
