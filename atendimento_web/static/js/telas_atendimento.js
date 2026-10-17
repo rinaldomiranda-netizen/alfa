@@ -23,7 +23,7 @@ registrarTela("dash", {
         { titulo: "Canal", valor: (x) => CANAIS[x.canal] || x.canal },
         { titulo: "Status", valor: (x) => selo(x.status) },
         { titulo: "Equipe", valor: (x) => x.fila_nome || "—" },
-        { titulo: "Responsável", valor: (x) => x.responsavel_nome || "—" },
+        { titulo: "Responsável", valor: (x) => x.responsavel_nome ? x.responsavel_nome + (x.responsavel_cargo ? " (" + x.responsavel_cargo + ")" : "") : "—" },
       ], d.recentes, (x) => navegar("chat", x.id)));
     const fila = h("div", { class: "cartao" },
       h("div", { class: "linha-titulo" }, h("div", null, h("h2", { text: "Fila de prioridade" }), h("span", { class: "suave", text: "Próximos SLAs de primeira resposta" }))),
@@ -77,7 +77,7 @@ registrarTela("chat", {
       const opcoes = m.payload && m.payload.opcoes && m.payload.opcoes.length ? h("div", { class: "opcoes-msg" }, m.payload.opcoes.map((o) => h("span", { class: "selo s-azul", text: o }))) : null;
       const entrega = m.direcao === "saida" && m.status_entrega ? ` • ${({ enviado: "enviado", entregue: "entregue", lido: "lido ✓✓", falhou: "FALHOU" })[m.status_entrega] || m.status_entrega}` : "";
       return h("div", { class: "msg " + classe, title: m.erro || "" }, m.texto, opcoes,
-        h("div", { class: "meta", text: `${m.autor_tipo === "robo" ? "Robô • " : ""}${hora(m.criada_em)}${entrega}` }));
+        h("div", { class: "meta", text: `${m.autor_tipo === "robo" ? "Robô • " : ""}${m.autor_nome ? m.autor_nome + (m.autor_cargo ? " (" + m.autor_cargo + ")" : "") + " • " : ""}${hora(m.criada_em)}${entrega}` }));
     }
 
     async function abrir(id) {
@@ -103,8 +103,16 @@ registrarTela("chat", {
       if (pode("orcamentos", "criar")) botoes.append(h("button", { class: "btn pequeno", type: "button", text: "▣ Orçamento", on: { click: () => App.editarOrcamento(null, { contato_id: c.contato_id, conversa_id: c.id }) } }));
       painel.append(h("div", { class: "cabeca-conversa" },
         h("div", null, h("b", { text: c.contato ? c.contato.nome : "—" }), " ", selo(c.status),
-          h("div", { class: "suave", text: `${CANAIS[c.canal] || c.canal} • Atendimento #${c.numero} • ${c.fila_nome || "sem fila"}${c.responsavel_nome ? " • " + c.responsavel_nome : ""}` })),
+          h("div", { class: "suave", text: `${CANAIS[c.canal] || c.canal} • Atendimento #${c.numero} • ${c.fila_nome || "sem fila"}${c.responsavel_nome ? " • " + c.responsavel_nome + (c.responsavel_cargo ? " (" + c.responsavel_cargo + ")" : "") : ""}` })),
         botoes));
+      if (c.exclusiva_sede) painel.append(h("div", { class: "aviso", text: "Pedido exclusivo da Sede — setores e igrejas não enxergam este atendimento." }));
+      if (c.liberacao === "pendente") {
+        const podeLiberar = ["owner", "admin"].includes(App.sessao.usuario.perfil);
+        painel.append(h("div", { class: "aviso" }, h("b", { text: "Aguardando a liberação da Sede. " }),
+          podeLiberar ? [h("button", { class: "btn pequeno sucesso", type: "button", text: "✓ Liberar", on: { click: () => decidirLiberacao(true) } }), " ",
+                         h("button", { class: "btn pequeno perigo", type: "button", text: "Não liberar", on: { click: () => decidirLiberacao(false) } })]
+                      : "Só a Administração da Sede pode liberar."));
+      } else if (c.liberacao) painel.append(h("div", { class: "suave", style: { padding: "4px 12px" }, text: (c.liberacao === "liberada" ? "Liberado pela Sede" : "Não liberado pela Sede") + (c.liberacao_nota ? ": " + c.liberacao_nota : "") }));
       const mensagens = h("div", { class: "mensagens" }, c.mensagens.map(balao));
       painel.append(mensagens);
       const texto = areaTexto("texto", "", { placeholder: c.status === "resolvido" ? "Atendimento resolvido." : "Digite uma mensagem…", title: "Enter envia • Shift+Enter quebra a linha", rows: 1, disabled: c.status === "resolvido" });
@@ -128,6 +136,14 @@ registrarTela("chat", {
         c.avaliacao ? [h("dt", { text: "Avaliação" }), h("dd", { text: "★".repeat(c.avaliacao) + "☆".repeat(5 - c.avaliacao) })] : null,
         memoria.length ? [h("dt", { text: "Respostas ao robô" }), h("dd", null, memoria.map(([k, v]) => h("div", { text: `${k}: ${v}` })))] : null),
         h("button", { class: "btn pequeno", type: "button", style: { marginTop: "12px" }, text: "Abrir cadastro", on: { click: () => App.abrirContato && App.abrirContato(c.contato_id) } }));
+    }
+
+    async function decidirLiberacao(liberar) {
+      const form = h("div", { class: "formulario" }, campo("Observação (opcional)", areaTexto("nota", "", { rows: 2 })));
+      modal({ titulo: liberar ? "Liberar este pedido" : "Não liberar este pedido", conteudo: form, acoes: [{ texto: "Cancelar" }, { texto: liberar ? "Liberar" : "Não liberar", classe: liberar ? "primario" : "perigo", acao: async () => {
+        estado.dados = await api(`/api/conversas/${estado.atual}/liberacao`, { dados: { liberar, nota: lerFormulario(form).nota } });
+        desenharConversa(); carregarLista(); toast(liberar ? "Liberado." : "Registrado.");
+      } }] });
     }
 
     async function acao(nome) {
@@ -160,14 +176,30 @@ registrarTela("chat", {
 
     await carregarLista();
     if (estado.atual) await abrir(estado.atual); else desenharConversa();
-    const t = setInterval(async () => {
-      if (App.atual !== "chat") return;
-      await carregarLista();
-      if (estado.atual && document.activeElement && document.activeElement.name !== "texto") {
-        try { const novo = await api("/api/conversas/" + estado.atual); if (novo.mensagens.length !== estado.dados.mensagens.length || novo.status !== estado.dados.status) { estado.dados = novo; desenharConversa(); } } catch (_) { /* ignora */ }
-      }
-    }, 6000);
-    App.limpezaTela = () => clearInterval(t);
+    let atualizando = false;
+    const sincronizar = async () => {
+      if (App.atual !== "chat" || atualizando || document.hidden) return;
+      atualizando = true;
+      try {
+        await carregarLista();
+        if (estado.atual) {
+          const novo = await api("/api/conversas/" + estado.atual);
+          if (novo.mensagens.length !== estado.dados.mensagens.length || novo.status !== estado.dados.status) {
+            // a mensagem nova aparece na hora, sem apagar o que a pessoa já está digitando
+            const campoTexto = document.querySelector(".compositor [name=texto]");
+            const rascunho = campoTexto ? campoTexto.value : "";
+            const tinhaFoco = !!campoTexto && document.activeElement === campoTexto;
+            estado.dados = novo; desenharConversa();
+            const novoCampo = document.querySelector(".compositor [name=texto]");
+            if (novoCampo && rascunho) { novoCampo.value = rascunho; if (tinhaFoco) { novoCampo.focus(); novoCampo.setSelectionRange(rascunho.length, rascunho.length); } }
+          }
+        }
+      } catch (_) { /* ignora: tenta de novo no próximo ciclo */ }
+      finally { atualizando = false; }
+    };
+    const t = setInterval(sincronizar, 3000);
+    document.addEventListener("visibilitychange", sincronizar);
+    App.limpezaTela = () => { clearInterval(t); document.removeEventListener("visibilitychange", sincronizar); };
   },
 });
 
@@ -200,12 +232,76 @@ App.abrirContato = async function abrirContato(id, aoSalvar) {
       const r = await api("/api/conversas/nova", { dados: { contato_id: id, texto: texto.value } }); navegar("chat", r.id);
     } }] });
   } });
-  acoesModal.push({ texto: novo ? "Cadastrar" : "Salvar", classe: "primario", acao: async () => {
+  acoesModal.push({ texto: novo ? "Cadastrar" : "Salvar", classe: "primario", acao: async (fecharForm) => {
     const d = lerFormulario(form);
-    await api(novo ? "/api/contatos" : "/api/contatos/" + id, { metodo: novo ? "POST" : "PUT", dados: d });
-    toast(novo ? "Nome cadastrado." : "Alterações salvas."); if (aoSalvar) aoSalvar();
+    const gravar = async (extra) => {
+      await api(novo ? "/api/contatos" : "/api/contatos/" + id, { metodo: novo ? "POST" : "PUT", dados: { ...d, ...(extra || {}) } });
+      toast(novo ? "Nome cadastrado." : "Alterações salvas."); if (aoSalvar) aoSalvar();
+    };
+    try { await gravar(); } catch (erro) {
+      if (!(erro.corpo && erro.corpo.duplicidade)) throw erro;
+      App.perguntarDuplicidade({ novo, id, dados: d, corpo: erro.corpo, gravar: async (x) => { await gravar(x); fecharForm(); }, aoSalvar });
+      return false;
+    }
   } });
   modal({ titulo: novo ? "Novo nome" : c.nome, subtitulo: novo ? "Cadastro, etiquetas e histórico" : `Cadastrado em ${data(c.criado_em)}`, conteudo: h("div", null, form, extra), acoes: acoesModal, larga: !novo });
+};
+
+const resumoContato = (c) => h("div", { class: "item" }, h("div", null,
+  h("b", { text: c.nome }),
+  h("div", { class: "suave", text: [telefone(c.whatsapp || c.telefone) || "sem telefone", c.email || "sem e-mail", (c.tags || []).length ? (c.tags || []).join(", ") : null].filter(Boolean).join(" • ") }),
+  h("div", { class: "suave", text: `Preenchimento: ${c.pontos} ponto${c.pontos === 1 ? "" : "s"}` + (c.motivo === "telefone" ? " • mesmo telefone" : c.motivo === "nome" ? " • mesmo nome" : "") })));
+
+/* Pergunta qual cadastro fica quando o sistema acha nome/telefone repetido. */
+App.perguntarDuplicidade = function perguntarDuplicidade({ novo, id, dados, corpo, gravar, aoSalvar }) {
+  const lista = corpo.candidatos || [];
+  const melhor = lista[0];
+  const acoes = [{ texto: "Cancelar" }];
+  if (corpo.pode_criar) acoes.push({ texto: "São pessoas diferentes", acao: () => gravar({ duplicidade: { acao: "criar" } }) });
+  if (novo) {
+    acoes.push({ texto: "Manter o que já existe (completar)", acao: () => gravar({ duplicidade: { acao: "manter", id: melhor.id } }) });
+    acoes.push({ texto: "Usar os dados novos", classe: "primario", acao: () => gravar({ duplicidade: { acao: "atualizar", id: melhor.id } }) });
+  } else {
+    acoes.push({ texto: "Mesclar e manter este", acao: () => gravar({ duplicidade: { acao: "mesclar", id: melhor.id, manter: "este" } }) });
+    acoes.push({ texto: "Mesclar e manter o outro", classe: "primario", acao: () => gravar({ duplicidade: { acao: "mesclar", id: melhor.id, manter: "outro" } }) });
+  }
+  modal({ titulo: "Nome repetido", subtitulo: corpo.erro, larga: true,
+    conteudo: h("div", null,
+      h("div", { class: "rotulo", text: novo ? "Você está cadastrando" : "Você está salvando" }),
+      h("div", { class: "item" }, h("div", null, h("b", { text: dados.nome }), h("div", { class: "suave", text: [dados.telefone || "sem telefone", dados.email || "sem e-mail"].join(" • ") }))),
+      h("div", { class: "rotulo", text: lista.length > 1 ? "Já cadastrados (o mais completo primeiro)" : "Já cadastrado" }),
+      lista.map(resumoContato),
+      h("p", { class: "suave", text: "Ao juntar, os campos vazios do que fica são completados com os dados do outro, e o histórico (conversas, orçamentos, jornada) vai junto." })),
+    acoes });
+};
+
+/* Varredura: junta o que já estava repetido. */
+App.abrirDuplicados = async function abrirDuplicados(aoMudar) {
+  const grupos = await api("/api/contatos/duplicados");
+  if (!grupos.length) { toast("Nenhum nome repetido."); return; }
+  const corpo = h("div");
+  const desenhar = (lista) => {
+    limpar(corpo);
+    if (!lista.length) { corpo.append(h("div", { class: "vazio", text: "Pronto, nada repetido." })); return; }
+    lista.forEach((g) => {
+      const caixa = h("div", { class: "cartao" });
+      g.itens.forEach((c) => {
+        const linha = resumoContato(c);
+        if (pode("contatos", "editar")) linha.append(h("button", { class: "btn" + (c.id === g.sugerido ? " primario" : ""), type: "button",
+          text: c.id === g.sugerido ? "Manter este (mais completo)" : "Manter este",
+          on: { click: async () => {
+            const outros = g.itens.filter((x) => x.id !== c.id);
+            if (!(await confirmar(`Manter "${c.nome}" e juntar ${outros.length === 1 ? "o outro cadastro" : "os " + outros.length + " outros"} nele?`, "Mesclar"))) return;
+            for (const o of outros) await api("/api/contatos/mesclar", { dados: { manter_id: c.id, remover_id: o.id } });
+            toast("Cadastros juntados."); if (aoMudar) aoMudar(); desenhar(await api("/api/contatos/duplicados"));
+          } } }));
+        caixa.append(linha);
+      });
+      corpo.append(caixa);
+    });
+  };
+  desenhar(grupos);
+  modal({ titulo: "Nomes repetidos", subtitulo: "Escolha qual cadastro fica em cada grupo", conteudo: corpo, acoes: [{ texto: "Fechar" }], larga: true });
 };
 
 registrarTela("names", {
@@ -224,6 +320,7 @@ registrarTela("names", {
       ], itens, (c) => App.abrirContato(c.id, recarregar)));
     };
     let atraso; busca.addEventListener("input", () => { clearTimeout(atraso); atraso = setTimeout(recarregar, 300); });
+    if (pode("contatos", "editar")) acoes.append(h("button", { class: "btn", type: "button", text: "Achar repetidos", on: { click: () => App.abrirDuplicados(recarregar) } }));
     if (pode("contatos", "criar")) acoes.append(h("button", { class: "btn primario", type: "button", text: "+ Novo nome", on: { click: () => App.abrirContato(null, recarregar) } }));
     el.append(h("div", { class: "cartao" }, h("div", { class: "linha-titulo" }, h("div", { class: "busca", style: { flex: 1 } }, busca)), area));
     await recarregar();

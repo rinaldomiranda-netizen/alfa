@@ -14,6 +14,8 @@ registrarTela("users", {
         campo("Nome", entrada("nome", u ? u.nome : "")),
         campo("E-mail (login)", entrada("email", u ? u.email : "", { type: "email", disabled: !!u })),
         campo("Perfil", seletor("perfil", d.perfis.map((p) => [p.id, p.nome]), u ? u.perfil : "atendente")),
+        d.cargos ? campo("Cargo na igreja", seletor("cargo_id", [["", "— sem cargo —"], ...d.cargos.map((g) => [g.id, g.nome])], u ? u.cargo_id || "" : ""),
+          "O cargo faz parte do que a pessoa pode ver e fazer. Quem define isso é a tabela de cargos, logo abaixo.") : null,
         campo("Fila / equipe", seletor("fila_id", [["", "— nenhuma —"], ...filas.map((f) => [f.id, f.nome])], u ? u.fila_id || "" : "")),
         u ? marcador("ativo", u.ativo, "Usuário ativo") : campo("Ligado ao nome (só para perfil Cliente)", seletor("contato_id", [["", "—"], ...contatos.map((c) => [c.id, c.nome])], "")),
         u ? null : campo("Senha inicial (opcional)", entrada("senha", "", { type: "password", autocomplete: "new-password" }), "Vazio = o sistema gera uma senha temporária e pede para trocar no primeiro acesso."));
@@ -34,16 +36,84 @@ registrarTela("users", {
     el.append(h("div", { class: "cartao" }, tabela([
       { titulo: "Usuário", valor: (u) => h("div", null, h("b", { text: u.nome }), h("div", { class: "suave", text: u.email })) },
       { titulo: "Perfil", valor: (u) => u.perfil_nome + (u.contato_nome ? ` (${u.contato_nome})` : "") },
+      ...(d.cargos ? [{ titulo: "Cargo", valor: (u) => u.cargo_nome || "—" }] : []),
       { titulo: "Equipe", valor: (u) => u.fila_nome || (u.perfil === "admin" ? "Todas" : "—") },
       { titulo: "Último acesso", valor: (u) => relativo(u.ultimo_acesso) },
       { titulo: "Status", valor: (u) => selo(u.ativo ? (u.presenca || "ativo") : "inativo", u.ativo ? null : "Desativado") },
     ], d.usuarios, pode("usuarios", "editar") ? editar : null)));
+    if (d.cargos) await desenharCargos(el, acoes);
     const perfis = ["admin", "supervisor", "atendente", "cliente"];
     const recursos = Object.keys(NOMES_RECURSOS).filter((r) => r !== "empresas");
     el.append(h("div", { class: "cartao", style: { marginTop: "15px" } }, h("h2", { text: "O que cada perfil pode fazer" }),
       tabela([{ titulo: "Área", valor: (r) => NOMES_RECURSOS[r] }, ...perfis.map((p) => ({ titulo: (d.nomes_perfis && d.nomes_perfis[p]) || { admin: "Admin. cliente", supervisor: "Supervisor", atendente: "Atendente", cliente: "Cliente" }[p], valor: (r) => (d.matriz[p][r] || []).join(", ") || "—" }))], recursos)));
   },
 });
+
+/* ================================================================ CARGOS DA IGREJA */
+async function desenharCargos(el) {
+  const c = await api("/api/cargos");
+  const editarCargo = (g) => {
+    const estado = JSON.parse(JSON.stringify((g && g.restricoes) || {}));
+    estado.recursos = estado.recursos || {}; estado.acoes = estado.acoes || {};
+    const caixas = [];
+    const grade = h("div", { class: "grade-cargo" });
+    c.catalogo.forEach((r) => {
+      const ligadoR = estado.recursos[r.recurso] !== false;
+      const cr = h("input", { type: "checkbox", checked: ligadoR });
+      const linha = h("div", { class: "cargo-recurso" }, h("label", { class: "opcao-check" }, cr, h("b", { text: " " + r.nome })));
+      const acoesEl = h("div", { class: "cargo-acoes", style: { marginLeft: "22px" } });
+      const lista = [];
+      r.acoes.forEach((a) => {
+        const ca = h("input", { type: "checkbox", checked: !(estado.acoes[r.recurso] && estado.acoes[r.recurso][a.acao] === false) });
+        lista.push([a.acao, ca]);
+        acoesEl.append(h("label", { class: "opcao-check", style: { marginRight: "12px" } }, ca, " " + a.nome));
+      });
+      cr.addEventListener("change", () => { acoesEl.style.opacity = cr.checked ? "1" : ".4"; });
+      acoesEl.style.opacity = ligadoR ? "1" : ".4";
+      caixas.push({ recurso: r.recurso, cr, lista });
+      grade.append(linha, acoesEl);
+    });
+    const form = h("div", { class: "formulario" },
+      campo("Nome do cargo", entrada("nome", g ? g.nome : "")),
+      campo("Nível na hierarquia (0 a 100)", entrada("nivel", g ? g.nivel : 10, { type: "number", min: 0, max: 100 }),
+        "Mostra quem está acima de quem. Nível maior NÃO dá acesso a nada sozinho — o acesso vem só da tabela abaixo."),
+      g ? marcador("ativo", g.ativo, "Cargo ativo (aparece na hora de escolher o cargo da pessoa)") : null,
+      h("p", { class: "suave", text: "Marque o que quem tem este cargo PODE ver e fazer. O que ficar desmarcado fica bloqueado para ele. Isso só tira permissões: nunca dá algo que o perfil da pessoa não tem." }),
+      grade);
+    const botoes = [{ texto: "Cancelar" }];
+    if (g) botoes.push({ texto: "Apagar cargo", fecha: false, acao: async () => {
+      if (!(await confirmar(`Apagar o cargo "${g.nome}"?`))) return false;
+      try { await api(`/api/cargos/${g.id}/excluir`, { dados: {} }); toast("Cargo apagado."); mostrarTela(); } catch (e) { falha(e); return false; }
+    } });
+    botoes.push({ texto: "Salvar", classe: "primario", acao: async () => {
+      const dados = lerFormulario(form);
+      const restricoes = { recursos: {}, acoes: {} };
+      caixas.forEach((x) => {
+        if (!x.cr.checked) restricoes.recursos[x.recurso] = false;
+        x.lista.forEach(([acao, ca]) => { if (!ca.checked) { (restricoes.acoes[x.recurso] = restricoes.acoes[x.recurso] || {})[acao] = false; } });
+      });
+      const corpo = { nome: dados.nome, nivel: dados.nivel, restricoes, ...(g ? { ativo: dados.ativo } : {}) };
+      await api(g ? "/api/cargos/" + g.id : "/api/cargos", { metodo: g ? "PUT" : "POST", dados: corpo });
+      toast("Cargo salvo."); mostrarTela();
+    } });
+    modal({ titulo: g ? "Cargo: " + g.nome : "Novo cargo", conteudo: form, acoes: botoes, larga: true });
+  };
+  const bloqueios = (g) => {
+    const r = g.restricoes || {};
+    const n = Object.keys(r.recursos || {}).length + Object.values(r.acoes || {}).reduce((t, m) => t + Object.keys(m).length, 0);
+    return n ? `${n} item(ns) bloqueado(s)` : "Tudo que o perfil permite";
+  };
+  el.append(h("div", { class: "cartao", style: { marginTop: "15px" } },
+    h("div", { class: "cabeca-cartao" }, h("h2", { text: "Cargos da igreja" }),
+      pode("usuarios", "editar") ? h("button", { class: "btn pequeno primario", type: "button", text: "+ Novo cargo", on: { click: () => editarCargo(null) } }) : null),
+    h("p", { class: "suave", text: "Pastor, presbítero, diácono, evangelista, tesoureiro(a), zelador(a)… O cargo fica na ficha da pessoa e define o que ela pode ver e fazer, junto com o perfil. Clique em um cargo para ajustar." }),
+    tabela([
+      { titulo: "Cargo", valor: (g) => h("b", { text: g.nome + (g.ativo ? "" : " (desligado)") }) },
+      { titulo: "Nível", valor: (g) => String(g.nivel), num: true },
+      { titulo: "Pessoas", valor: (g) => String(g.pessoas), num: true },
+      { titulo: "Permissões", valor: bloqueios },
+    ], c.cargos, pode("usuarios", "editar") ? editarCargo : null)));
+}
 
 /* ================================================================ BACKUP */
 registrarTela("backup", {

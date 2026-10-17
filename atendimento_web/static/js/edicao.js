@@ -6,6 +6,7 @@
 
   // frases inteiras primeiro, depois palavras soltas
   const TROCAS = [
+    ["Visita técnica", "Visita pastoral"],
     ["Catálogo comercial usado nos orçamentos.", "O que a igreja oferece às pessoas."],
     ["Propostas, envio e negociação.", "Pedidos que precisam de acompanhamento até o fim."],
     ["Orçamentos e conversão", "Solicitações e acompanhamento"],

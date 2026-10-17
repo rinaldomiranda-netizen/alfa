@@ -6,6 +6,8 @@ Ponto de entrada: ``Plataforma``.
 from __future__ import annotations
 
 from .canais import CanaisMixin, http_padrao
+from .cargos import CargosMixin
+from .duplicidade import DuplicidadeMixin
 from .comercial import ComercialMixin
 from .conversas import ConversasMixin
 from .db import Banco
@@ -15,13 +17,13 @@ from .igreja import IgrejaMixin
 from .nucleo import Ator, Conflito, ErroNegocio, NaoAutenticado, NaoEncontrado, NucleoMixin
 from .permissoes import SemPermissao
 from .personalizacao import PersonalizacaoMixin
-from .sistema import SistemaMixin
+from .sistema import ConvitesTesteMixin, SistemaMixin
 
 VERSAO = "5.5.0"
 
 
 class Plataforma(NucleoMixin, ConversasMixin, FluxosMixin, ComercialMixin, CanaisMixin, GestaoMixin, IgrejaMixin, SistemaMixin,
-                 PersonalizacaoMixin):
+                 PersonalizacaoMixin, CargosMixin, DuplicidadeMixin, ConvitesTesteMixin):
     def __init__(self, caminho_banco=None, http=None, pasta_backups=None):
         self.banco = Banco(caminho_banco)
         self.http = http or http_padrao

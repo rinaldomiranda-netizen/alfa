@@ -453,6 +453,37 @@ ESQUEMA = [
         atualizado_em TEXT NOT NULL
     );
     """,
+    # 8 — Fluxos da Sede: pedido que só a Sede atende e liberação (aprovação) da Sede antes de responder ao solicitante.
+    """
+    ALTER TABLE conversas ADD COLUMN exclusiva_sede INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE conversas ADD COLUMN liberacao TEXT;
+    ALTER TABLE conversas ADD COLUMN liberacao_nota TEXT;
+    ALTER TABLE conversas ADD COLUMN liberacao_em TEXT;
+    """,
+    # 9 — WhatsApp por QR Code (WhatsApp Web): o canal pode ser "oficial" (Meta) ou "qr"
+    """
+    ALTER TABLE whatsapp_canais ADD COLUMN modo TEXT NOT NULL DEFAULT 'oficial';
+    ALTER TABLE whatsapp_canais ADD COLUMN qr_estado TEXT;
+    ALTER TABLE whatsapp_canais ADD COLUMN qr_codigo TEXT;
+    ALTER TABLE whatsapp_canais ADD COLUMN qr_numero TEXT;
+    """,
+    # 10 — Cargos da igreja (pastor, presbítero, diácono, evangelista…) com nível e permissões próprias; sem células.
+    """
+    CREATE TABLE IF NOT EXISTS igreja_cargos (
+        id TEXT PRIMARY KEY,
+        empresa_id TEXT NOT NULL REFERENCES empresas(id),
+        nome TEXT NOT NULL,
+        nivel INTEGER NOT NULL DEFAULT 0,
+        ordem INTEGER NOT NULL DEFAULT 0,
+        ativo INTEGER NOT NULL DEFAULT 1,
+        restricoes TEXT NOT NULL DEFAULT '{}',
+        criado_em TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ix_cargos_empresa ON igreja_cargos(empresa_id, ordem);
+    ALTER TABLE usuarios ADD COLUMN cargo_id TEXT;
+    UPDATE igreja_jornada SET etapa='retornou' WHERE etapa='grupo';
+    UPDATE servicos SET ativo=0 WHERE nome IN ('Participar de uma célula','Abrir uma célula na minha casa');
+    """,
 ]
 
 PLANOS_PADRAO = (

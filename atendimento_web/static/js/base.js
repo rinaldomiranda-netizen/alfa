@@ -394,3 +394,10 @@ async function iniciar() {
   }
 }
 window.addEventListener("hashchange", mostrarTela);
+
+/* Sinal de vida: o servidor local (aberto pelo atalho do Church) se encerra sozinho quando esta janela é fechada. */
+(function () {
+  const bater = () => { try { fetch("/api/vivo", { cache: "no-store" }).catch(() => {}); } catch (e) { /* sem rede: ignora */ } };
+  bater(); setInterval(bater, 20000);
+  window.addEventListener("pagehide", () => { try { fetch("/api/saindo", { keepalive: true, cache: "no-store" }).catch(() => {}); } catch (e) { /* ignora */ } });
+})();

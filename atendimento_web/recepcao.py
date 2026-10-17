@@ -65,7 +65,10 @@ def _resposta(service, resultado) -> dict:
         mensagem, proxima, acao = resultado.get("mensagem", ""), resultado.get("proxima_pergunta"), resultado.get("acao")
     else:
         mensagem, proxima, acao = str(resultado), None, None
-    if not proxima and service.modulo.ativo:
+    if acao in ("confirmar", "repetir_confirmacao", "repetir_pergunta"):
+        # a própria mensagem já é a pergunta de confirmação; repetir a pergunta do campo fazia a tela pedir tudo de novo
+        proxima = None
+    elif not proxima and service.modulo.ativo:
         proxima = service.modulo.engine.pergunta_atual()
     return {"mensagem": mensagem, "proxima_pergunta": proxima, "acao": acao, "status": _status(service)}
 

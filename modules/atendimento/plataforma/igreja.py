@@ -1,7 +1,7 @@
 """RMD Atendimento Church — recursos próprios da igreja.
 
 - Visitantes & consolidação: cartão do visitante (QR na entrada da igreja),
-  jornada da pessoa (novo → contatado → visitou de novo → célula/grupo →
+  jornada da pessoa (novo → contatado → voltou ao culto →
   integrado) com próximo contato e aviso de quem ficou sem retorno.
 - Pedidos de oração: com privacidade (pastoral = só liderança; equipe de
   intercessão), contador de "orei por isso" e testemunho quando é respondido.
@@ -23,7 +23,6 @@ ETAPAS = (
     ("novo", "Primeira visita"),
     ("contatado", "Contatado"),
     ("retornou", "Voltou ao culto"),
-    ("grupo", "Em célula / grupo"),
     ("integrado", "Integrado"),
 )
 CHAVES_ETAPAS = tuple(e for e, _ in ETAPAS)
@@ -54,8 +53,6 @@ TIPOS_SOLICITACAO_IGREJA = (
     ("Visita pastoral", "Pastoral"),
     ("Aconselhamento pastoral", "Pastoral"),
     ("Oração / intercessão", "Pastoral"),
-    ("Participar de uma célula", "Células"),
-    ("Abrir uma célula na minha casa", "Células"),
     ("Batismo", "Ministério"),
     ("Apresentação de criança", "Ministério"),
     ("Casamento", "Ministério"),
@@ -158,8 +155,28 @@ class IgrejaMixin:
         escopo = self._escopo_cache(ator)
         if escopo is TODA_A_SEDE or conversa.get("responsavel_id") == ator.usuario_id:
             return True
+        if conversa.get("exclusiva_sede"):
+            return False  # pedido encaminhado só à Sede: setores e igrejas não enxergam
         unidade = self._unidade_do_contato(conversa["empresa_id"], conversa.get("contato_id"))
         return unidade in escopo if unidade else not escopo
+
+    def _contexto_igreja(self, empresa_id: str, contato_id: str | None) -> dict:
+        """O que o robô sabe sobre de onde a pessoa vem (para as condições dos fluxos)."""
+        unidade_id = self._unidade_do_contato(empresa_id, contato_id)
+        if not unidade_id:
+            contato = self.banco.um("SELECT unidade_id FROM contatos WHERE id=?", (contato_id,)) if contato_id else None
+            unidade_id = contato["unidade_id"] if contato else None
+        unidades = {u["id"]: u for u in self._unidades_empresa(empresa_id)}
+        unidade = unidades.get(unidade_id) if unidade_id else None
+        if not unidade:
+            return {"unidade": "", "unidade_tipo": "", "igreja": "", "origem": "sede"}
+        igreja, atual = "", unidade
+        while atual:  # sobe até achar a igreja (ou a congregação) a que a unidade pertence
+            if atual["tipo"] in ("igreja", "congregacao"):
+                igreja = atual["nome"]
+                break
+            atual = unidades.get(atual["pai_id"])
+        return {"unidade": unidade["nome"], "unidade_tipo": unidade["tipo"], "igreja": igreja, "origem": "unidade"}
 
     def _filtrar_alertas_igreja(self, ator: Ator, alertas: list[dict]) -> list[dict]:
         """Lotado numa parte: só os alertas de visitantes, orações e conversas dessa parte."""
@@ -820,7 +837,7 @@ def povoar_demo_igreja(p, empresa_id: str) -> None:
         ("Lucas Ferreira", "79991110001", "novo", 1, "convite", "Irmã Joana", 1, None),
         ("Beatriz Rocha", "79991110002", "contatado", 6, "redes_sociais", None, 0, -2),
         ("Família Nascimento", "79991110003", "retornou", 14, "familia", "Pr. Marcos", 1, 3),
-        ("Rafael Costa", "79991110004", "grupo", 30, "evento", None, 0, 5),
+        ("Rafael Costa", "79991110004", "retornou", 30, "evento", None, 0, 5),
         ("Juliana Melo", "79991110005", "integrado", 60, "convite", "Carla Souza", 0, None),
     )
     for nome, tel, etapa, dias, como, convidado, visita, prox in pessoas:

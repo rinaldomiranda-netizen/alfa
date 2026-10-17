@@ -1,0 +1,385 @@
+/* Gestão: Orçamentos, Serviços & Preços, Fluxos, Agenda */
+"use strict";
+
+/* ================================================================ ORÇAMENTOS */
+function paraCentavos(texto) {
+  if (texto === "" || texto === null || texto === undefined) return 0;
+  let t = String(texto).replace(/R\$\s?/g, "").trim();
+  if (t.includes(",")) t = t.replace(/\./g, "").replace(",", ".");
+  const n = Number(t);
+  return Number.isFinite(n) ? Math.round(n * 100) : NaN;
+}
+function reais(centavos) { return ((centavos || 0) / 100).toFixed(2).replace(".", ","); }
+/* Valores em dinheiro: função que o RMD Desenvolvedor liga/desliga por cliente (na igreja começa desligada). */
+function comValores() { return pode("valores", "ver"); }
+/* Sigla do documento: na igreja "SOL" (Solicitação), nas empresas "ORC" (Orçamento). */
+function sigla() { return document.documentElement.dataset.edicao === "church" ? "SOL" : "ORC"; }
+
+App.editarOrcamento = async function editarOrcamento(id, inicial = {}, aoSalvar) {
+  const [contatos, servicos] = await Promise.all([api("/api/contatos"), api("/api/servicos?ativos=1")]);
+  if (!contatos.length) { toast("Cadastre um nome primeiro (menu Nomes).", "erro"); return; }
+  const o = id ? await api("/api/orcamentos/" + id) : {
+    contato_id: inicial.contato_id || contatos[0].id, conversa_id: inicial.conversa_id || null, descricao: "", itens: [],
+    validade: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10), desconto_centavos: 0, status: "rascunho",
+  };
+  const bloqueado = o.status === "aprovado";
+  const contato = seletor("contato_id", contatos.map((c) => [c.id, c.nome]), o.contato_id, { disabled: bloqueado });
+  const telefoneInfo = h("input", { readonly: true, tabindex: -1 });
+  const mostrarTelefone = () => { const c = contatos.find((x) => x.id === contato.value); telefoneInfo.value = c ? telefone(c.whatsapp || c.telefone) : ""; };
+  contato.addEventListener("change", mostrarTelefone); mostrarTelefone();
+  const itens = h("div");
+  const totalEl = h("b", { class: "valor", style: { fontSize: "22px" } });
+  const desconto = entrada("desconto", reais(o.desconto_centavos), { inputmode: "decimal", disabled: bloqueado });
+  const valores = comValores();
+  const opcoesServico = [["", "— item livre —"], ...servicos.map((s) => [s.id, valores ? `${s.nome} (${moeda(s.preco_centavos)})` : s.nome])];
+  const linhaItem = (it = {}) => {
+    const serv = seletor("servico_id", opcoesServico, it.servico_id || "", { disabled: bloqueado });
+    const desc = entrada("descricao", it.descricao || "", { placeholder: "Descrição", disabled: bloqueado });
+    const qtd = entrada("quantidade", it.quantidade ?? 1, { inputmode: "decimal", disabled: bloqueado });
+    const valor = entrada("valor_unit", it.valor_unit_centavos !== undefined ? reais(it.valor_unit_centavos) : "", { inputmode: "decimal", placeholder: "0,00", disabled: bloqueado });
+    serv.addEventListener("change", () => { const s = servicos.find((x) => x.id === serv.value); if (s) { desc.value = s.nome; valor.value = reais(s.preco_centavos); } recalcular(); });
+    [qtd, valor].forEach((e) => e.addEventListener("input", recalcular));
+    const linha = h("div", { class: "formulario item-orc", style: { gridTemplateColumns: valores ? "1.3fr 1.5fr .6fr .8fr auto" : "1.3fr 1.5fr .6fr auto", alignItems: "end", marginBottom: "6px" } },
+      campo("Serviço", serv), campo("Descrição", desc), campo("Qtd.", qtd), valores ? campo("Valor unit. (R$)", valor) : null,
+      bloqueado ? h("span") : h("button", { class: "btn pequeno perigo", type: "button", title: "Remover item", text: "✕", on: { click: () => { linha.remove(); recalcular(); } } }));
+    itens.append(linha);
+  };
+  function lerItens() {
+    return [...itens.querySelectorAll(".item-orc")].map((l) => {
+      const d = lerFormulario(l);
+      return { servico_id: d.servico_id || null, descricao: d.descricao, quantidade: d.quantidade, valor_unit: valores ? d.valor_unit : "" };
+    });
+  }
+  function recalcular() {
+    const subtotal = lerItens().reduce((s, i) => s + Math.round(Number(String(i.quantidade).replace(",", ".")) * paraCentavos(i.valor_unit)), 0);
+    const d = paraCentavos(desconto.value);
+    totalEl.textContent = Number.isFinite(subtotal - d) ? moeda(subtotal - d) : "—";
+  }
+  desconto.addEventListener("input", recalcular);
+  (o.itens.length ? o.itens : [{}]).forEach(linhaItem);
+  recalcular();
+  const form = h("div", { class: "formulario" },
+    campo("Nome (cliente)", contato), campo("Telefone", telefoneInfo),
+    campo("Validade", entrada("validade", o.validade, { type: "date", disabled: bloqueado })), campo("Situação", h("div", null, selo(o.status))),
+    campo("Descrição", areaTexto("descricao", o.descricao || "", { disabled: bloqueado }), null, true));
+  const conteudo = h("div", null, form, h("h3", { text: "Itens" }), itens,
+    bloqueado ? null : h("button", { class: "btn pequeno", type: "button", text: "+ Adicionar item", on: { click: () => { linhaItem(); recalcular(); } } }),
+    valores ? h("div", { class: "formulario", style: { marginTop: "12px", alignItems: "end" } }, campo("Desconto (R$)", desconto), campo("Total", totalEl)) : null);
+  const salvar = async () => {
+    const dados = { ...lerFormulario(form), contato_id: contato.value, conversa_id: o.conversa_id, itens: lerItens(), desconto: valores ? desconto.value : 0 };
+    const r = await api(id ? "/api/orcamentos/" + id : "/api/orcamentos", { metodo: id ? "PUT" : "POST", dados });
+    id = r.id; return r;
+  };
+  const acoes = [{ texto: "Fechar" }];
+  if (!bloqueado) acoes.push({ texto: "💾 Salvar", fecha: false, acao: async () => { await salvar(); toast("Orçamento salvo."); if (aoSalvar) aoSalvar(); } });
+  acoes.push({ texto: "📄 Gerar PDF", fecha: false, acao: async () => { if (!bloqueado) await salvar(); window.open(`/orcamentos/${id}/imprimir`, "_blank", "noopener"); } });
+  if (!["aprovado", "recusado"].includes(o.status)) acoes.push({ texto: "Enviar pelo WhatsApp", classe: "primario", acao: async () => {
+    await salvar();
+    const r = await api(`/api/orcamentos/${id}/enviar`, { dados: {} });
+    if (r.link) { window.open(r.link, "_blank", "noopener"); toast("WhatsApp aberto com o orçamento. Configure o WhatsApp oficial para enviar direto pelo sistema."); }
+    else toast("Orçamento enviado pelo WhatsApp.");
+    if (aoSalvar) aoSalvar();
+  } });
+  modal({ titulo: id ? `Orçamento ${sigla()}-${o.numero}` : "Novo orçamento", subtitulo: valores ? "Os valores são conferidos e calculados pelo servidor." : "", conteudo, acoes, larga: true });
+};
+
+registrarTela("quotes", {
+  titulo: "Orçamentos", sub: "Propostas, envio e negociação.", icone: "▣",
+  async render(el, { acoes }) {
+    const filtro = seletor("status", [["", "Todas as situações"], ["rascunho", "Rascunho"], ["enviado", "Enviado"], ["em_analise", "Em análise"], ["aprovado", "Aprovado"], ["recusado", "Recusado"], ["vencido", "Vencido"]], "");
+    const area = h("div");
+    const recarregar = async () => {
+      const itens = await api("/api/orcamentos?status=" + filtro.value);
+      limpar(area).append(tabela([
+        { titulo: "Nº", valor: (o) => sigla() + "-" + o.numero },
+        { titulo: "Nome", valor: (o) => o.contato_nome },
+        { titulo: "Serviço", valor: (o) => o.servicos || "—" },
+        ...(comValores() ? [{ titulo: "Total", valor: (o) => moeda(o.total_centavos), num: true }] : []),
+        { titulo: "Validade", valor: (o) => data(o.validade) },
+        { titulo: "Status", valor: (o) => selo(o.status) },
+        { titulo: "", valor: (o) => acoesStatus(o) },
+      ], itens, (o) => App.editarOrcamento(o.id, {}, recarregar)));
+    };
+    const acoesStatus = (o) => {
+      const caixa = h("div", { class: "acoes", on: { click: (e) => e.stopPropagation() } });
+      const muda = (status, texto) => caixa.append(h("button", { class: "btn pequeno", type: "button", text: texto, on: { click: async () => { try { await api(`/api/orcamentos/${o.id}/status`, { dados: { status } }); toast("Situação atualizada."); recarregar(); } catch (e) { falha(e); } } } }));
+      if (o.status === "enviado") { muda("em_analise", "Em análise"); muda("aprovado", "Aprovado"); muda("recusado", "Recusado"); }
+      if (o.status === "em_analise") { muda("aprovado", "Aprovado"); muda("recusado", "Recusado"); }
+      if (["vencido", "recusado"].includes(o.status)) muda("rascunho", "Reabrir");
+      return caixa;
+    };
+    filtro.addEventListener("change", recarregar);
+    App.aposOrcamento = recarregar;
+    if (pode("orcamentos", "criar")) acoes.append(h("button", { class: "btn primario", type: "button", text: "+ Novo orçamento", on: { click: () => App.editarOrcamento(null, {}, recarregar) } }));
+    el.append(h("div", { class: "cartao" }, h("div", { class: "linha-titulo" }, h("div", { style: { width: "240px" } }, filtro)), area));
+    await recarregar();
+  },
+});
+
+/* ================================================================ SERVIÇOS */
+registrarTela("services", {
+  titulo: "Serviços & Preços", sub: "Catálogo comercial usado nos orçamentos.", icone: "◆",
+  async render(el, { acoes }) {
+    const itens = await api("/api/servicos");
+    const editar = (s) => {
+      const form = h("div", { class: "formulario" },
+        campo("Serviço", entrada("nome", s ? s.nome : "")), campo("Categoria", entrada("categoria", s ? s.categoria || "" : "")),
+        comValores() ? campo("Preço (R$)", entrada("preco", s ? reais(s.preco_centavos) : "", { inputmode: "decimal", placeholder: "0,00" })) : null,
+        campo("Prazo / SLA (horas)", entrada("sla_horas", s && s.sla_horas ? s.sla_horas : "", { type: "number", min: 1 })),
+        campo("Descrição", areaTexto("descricao", s ? s.descricao || "" : ""), null, true), marcador("ativo", s ? s.ativo : true, "Ativo (aparece nos orçamentos)"));
+      modal({ titulo: s ? "Editar serviço" : "Novo serviço", conteudo: form, acoes: [{ texto: "Cancelar" }, { texto: "Salvar", classe: "primario", acao: async () => {
+        await api(s ? "/api/servicos/" + s.id : "/api/servicos", { metodo: s ? "PUT" : "POST", dados: lerFormulario(form) }); toast("Serviço salvo."); mostrarTela();
+      } }] });
+    };
+    if (pode("servicos", "criar")) acoes.append(h("button", { class: "btn primario", type: "button", text: "+ Novo serviço", on: { click: () => editar(null) } }));
+    el.append(h("div", { class: "cartao" }, tabela([
+      { titulo: "Serviço", valor: (s) => s.nome }, { titulo: "Categoria", valor: (s) => s.categoria || "—" },
+      ...(comValores() ? [{ titulo: "Preço", valor: (s) => moeda(s.preco_centavos), num: true }] : []), { titulo: "SLA", valor: (s) => (s.sla_horas ? s.sla_horas + "h" : "—") },
+      { titulo: "Status", valor: (s) => selo(s.ativo ? "ativo" : "inativo") },
+    ], itens, pode("servicos", "editar") ? editar : null)));
+  },
+});
+
+/* ================================================================ FLUXOS */
+const TIPOS_ETAPA = { mensagem: "Mensagem", pergunta: "Pergunta", memoria: "Memória", tag: "Etiqueta", condicao: "Condição", handoff: "Passar para humano", notificar: "Avisar a Sede", encerrar: "Encerrar" };
+const OPERADORES_FLUXO = [["igual", "é igual a"], ["diferente", "é diferente de"], ["contem", "contém"], ["nao_contem", "não contém"], ["comeca_com", "começa com"], ["em_lista", "está na lista (separe por vírgula)"], ["maior", "é maior que (número)"], ["menor", "é menor que (número)"], ["existe", "foi respondida"], ["nao_existe", "está vazia"]];
+const VARIAVEIS_FLUXO = "Já conhecidas: nome, canal, unidade, unidade_tipo (setor, campo, igreja…), igreja e origem (“sede” quando a pessoa não é de nenhuma igreja).";
+// Modelos prontos: criam as etapas; a pessoa só confere e ajusta.
+const MODELOS_FLUXO = {
+  documento_sede: ["Documento só a Sede emite → Sede", [
+    { tipo: "mensagem", texto: "Olá, {{nome}}! Vou registrar o seu pedido." },
+    { tipo: "pergunta", texto: "Qual documento você precisa?", variavel: "documento", opcoes: ["Carta de recomendação", "Certidão", "Outro"] },
+    { tipo: "tag", tag: "documento" },
+    { tipo: "handoff", destino: "sede", liberacao: true, texto: "Pedido enviado à Sede. Assim que for liberado, você receberá a resposta aqui." }]],
+  oracao_sede: ["Oração designada à Sede", [
+    { tipo: "pergunta", texto: "Seu pedido de oração é para a liderança da Sede?", variavel: "para_sede", opcoes: ["Sim", "Não"] },
+    { tipo: "condicao", variavel: "para_sede", operador: "igual", valor: "Sim", ir_para: 3, senao_ir_para: 5 },
+    { tipo: "notificar", texto: "Novo pedido de oração para a Sede ({{unidade}})." },
+    { tipo: "handoff", destino: "sede", texto: "A liderança da Sede recebeu o seu pedido. Estamos orando por você." },
+    { tipo: "mensagem", texto: "Sua igreja vai cuidar do seu pedido. Deus abençoe!" },
+    { tipo: "handoff", destino: "fila" }]],
+  filtro_setor: ["Setor resolve; Sede só se for de documentos", [
+    { tipo: "pergunta", texto: "Sobre o que é o seu pedido?", variavel: "assunto", opcoes: ["Documento", "Visita pastoral", "Outro"] },
+    { tipo: "condicao", variavel: "assunto", operador: "igual", valor: "Documento", ir_para: 3, senao_ir_para: 4 },
+    { tipo: "handoff", destino: "sede", liberacao: true },
+    { tipo: "handoff", destino: "fila" }]],
+};
+
+async function editarFluxo(fluxo) {
+  const [filas, servicos, contatos] = await Promise.all([api("/api/filas"), api("/api/servicos").catch(() => []), api("/api/contatos").catch(() => [])]);
+  const etapas = JSON.parse(JSON.stringify(fluxo ? fluxo.etapas : [{ tipo: "mensagem", texto: "Olá, {{nome}}! Bem-vindo à {{empresa}}." }]));
+  const cab = h("div", { class: "formulario" },
+    campo("Nome do fluxo", entrada("nome", fluxo ? fluxo.nome : "")),
+    campo("Começar de um modelo pronto", (() => { const m = seletor("modelo", [["", "— em branco —"], ...Object.entries(MODELOS_FLUXO).map(([k, v]) => [k, v[0]])], ""); m.addEventListener("change", () => { if (!m.value) return; etapas.splice(0, etapas.length, ...JSON.parse(JSON.stringify(MODELOS_FLUXO[m.value][1]))); desenhar(); }); return m; })(), "Preenche as etapas para você conferir e ajustar; as filas continuam por sua escolha.", true),
+    campo("Quando começa", seletor("gatilho_tipo", [["sempre", "Sempre que alguém chama"], ["palavra_chave", "Quando a mensagem tem uma palavra-chave"], ["manual", "Manual (não começa sozinho)"]], fluxo ? fluxo.gatilho_tipo : "sempre")),
+    campo("Palavra-chave", entrada("gatilho_valor", fluxo ? fluxo.gatilho_valor || "" : "", { placeholder: "orçamento" }), "Só para o gatilho de palavra-chave."));
+  // ---- listas de escolha (nada de digitar o que já existe no sistema)
+  const semAcento = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  const nomeValido = (t) => semAcento(t).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").replace(/^(\d)/, "_$1").slice(0, 40);
+  const SISTEMA = { nome: { rot: "Nome da pessoa" }, canal: { rot: "Canal (site, WhatsApp…)", opcoes: ["web", "whatsapp", "portal", "interno"] },
+    unidade: { rot: "Setor/igreja da pessoa" }, unidade_tipo: { rot: "Tipo do local da pessoa", opcoes: ["setor", "campo", "igreja", "congregacao", "departamento"] },
+    igreja: { rot: "Igreja da pessoa" }, origem: { rot: "De onde vem (Sede ou unidade)", opcoes: ["sede", "unidade"] } };
+  const SUGESTOES_NOME = ["assunto", "documento", "para_sede", "motivo", "detalhe"];
+  const ativos = servicos.filter((x) => x.ativo !== 0);
+  const DOS_SERVICOS = ativos.map((x) => x.nome);
+  const tagsConhecidas = () => [...new Set([...(contatos || []).flatMap((c) => c.tags || []), ...etapas.filter((x) => x.tipo === "tag" && x.tag).map((x) => x.tag),
+    "documento", "oração", "visita", "batismo", "ajuda social", ...DOS_SERVICOS.filter((n) => n.length <= 30)])].sort((a, b) => a.localeCompare(b, "pt-BR"));
+  // memórias que a etapa i já pode ler: informações do sistema + perguntas/memórias das etapas de antes
+  function variaveisAte(i) {
+    const v = {}; Object.entries(SISTEMA).forEach(([k, d]) => { v[k] = { rot: d.rot, opcoes: d.opcoes || null }; });
+    etapas.slice(0, i).forEach((x) => {
+      if (!x.variavel || SISTEMA[x.variavel]) return;
+      if (x.tipo === "pergunta") v[x.variavel] = { rot: `Resposta da pergunta “${(x.texto || "").slice(0, 28)}”`, opcoes: (x.opcoes && x.opcoes.length) ? x.opcoes : null };
+      else if (x.tipo === "memoria") v[x.variavel] = { rot: "Valor guardado na memória", opcoes: null };
+    });
+    return v;
+  }
+  function seletorNome(e) {
+    const usados = [...new Set([...etapas.filter((x) => x.variavel && !SISTEMA[x.variavel]).map((x) => x.variavel), ...SUGESTOES_NOME])];
+    if (e.variavel && !usados.includes(e.variavel) && !SISTEMA[e.variavel]) usados.push(e.variavel);
+    const sel = seletor("v", [["", "— escolha o nome —"], ...usados.map((n) => [n, n]), ["__novo", "✎ Criar outro nome…"]], e.variavel && !SISTEMA[e.variavel] ? e.variavel : "");
+    const novo = entrada("vn", "", { placeholder: "ex.: tipo_de_pedido" }); novo.style.display = "none"; novo.style.marginTop = "6px";
+    sel.addEventListener("change", () => { if (sel.value === "__novo") { novo.style.display = ""; novo.focus(); } else { novo.style.display = "none"; e.variavel = sel.value; desenhar(); } });
+    novo.addEventListener("change", () => { const n = nomeValido(novo.value); if (n) { e.variavel = n; desenhar(); } });
+    return h("div", null, sel, novo);
+  }
+  function listaOpcoes(e) {   // marcar as respostas possíveis (vindas dos Serviços) + criar outras
+    const marcadas = e.opcoes || (e.opcoes = []);
+    const candidatas = [...new Set([...marcadas, ...DOS_SERVICOS, "Sim", "Não", "Outro"])];   // as já marcadas ficam no topo
+    const caixa = h("div", { class: "opcoes-fluxo", style: { display: "grid", gap: "4px", maxHeight: "190px", overflow: "auto", padding: "6px", border: "1px solid var(--borda, #ccc)", borderRadius: "8px" } });
+    candidatas.forEach((nome) => {
+      const longa = nome.length > 24;
+      const cx = h("input", { type: "checkbox" }); cx.checked = marcadas.includes(nome); cx.disabled = longa && !cx.checked;
+      cx.addEventListener("change", () => { const j = marcadas.indexOf(nome); if (cx.checked && j < 0) marcadas.push(nome); if (!cx.checked && j >= 0) marcadas.splice(j, 1); desenhar(); });
+      caixa.append(h("label", { class: "opcao-check", title: longa ? "Nome com mais de 24 letras: encurte em Serviços para usar como botão." : "" }, cx, " ", nome, longa ? " (nome longo demais)" : ""));
+    });
+    const outra = entrada("no", "", { placeholder: "Outra opção (até 24 letras)", maxlength: "24" });
+    const add = h("button", { class: "btn pequeno", type: "button", text: "+ Adicionar", on: { click: () => { const t = outra.value.trim(); if (t && !marcadas.some((m) => semAcento(m) === semAcento(t))) { marcadas.push(t); desenhar(); } } } });
+    return h("div", null, caixa, h("div", { class: "acoes", style: { marginTop: "6px" } }, outra, add));
+  }
+  function seletorEtapa(e, chave, i, vazio) {
+    const sel = seletor(chave, [["", vazio], ...etapas.map((x, j) => [String(j + 1), `${j + 1}. ${TIPOS_ETAPA[x.tipo] || x.tipo}${x.texto ? " — " + x.texto.slice(0, 30) : ""}`]).filter(([n]) => Number(n) !== i + 1)], e[chave] ? String(e[chave]) : "");
+    sel.addEventListener("change", () => { e[chave] = sel.value ? Number(sel.value) : null; });
+    return sel;
+  }
+  function inserirMemoria(e, area, i) {   // botões que colocam {{nome}}, {{unidade}}… no texto
+    const v = variaveisAte(i);
+    return h("div", { class: "acoes", style: { flexWrap: "wrap", marginTop: "4px" } }, h("span", { class: "suave", text: "Inserir:" }),
+      Object.keys(v).map((n) => h("button", { class: "btn pequeno", type: "button", text: n, title: v[n].rot, on: { click: () => { area.value += `{{${n}}}`; e.texto = area.value; area.focus(); } } })));
+  }
+  const lista = h("div");
+  const resultado = h("div", { class: "simulacao" }, h("div", { class: "suave", text: "Escreva as respostas do cliente (uma por linha) e clique em Simular." }));
+  const entradas = areaTexto("entradas", "Orçamento", { rows: 3 });
+  const como = seletor("como", [["sede", "uma pessoa da Sede (sem igreja)"], ["igreja", "uma pessoa de uma igreja"], ["setor", "uma pessoa de um setor"], ["campo", "uma pessoa de um campo"]], "sede");
+  function desenhar() {
+    limpar(lista);
+    etapas.forEach((e, i) => {
+      const f = (chave, el) => { el.addEventListener("input", () => { e[chave] = el.type === "number" ? (el.value ? Number(el.value) : null) : el.value; }); return el; };
+      const corpo = h("div", { class: "formulario" });
+      if (["mensagem", "pergunta"].includes(e.tipo)) { const area = f("texto", areaTexto("t", e.texto || "", { rows: 2 })); corpo.append(campo("Texto", h("div", null, area, inserirMemoria(e, area, i)), "Os botões “Inserir” colocam informações da pessoa no texto.", true)); }
+      if (["pergunta", "memoria"].includes(e.tipo)) corpo.append(campo(e.tipo === "pergunta" ? "Guardar a resposta em" : "Guardar em", seletorNome(e), "O mesmo nome pode ser lido depois numa condição."));
+      if (e.tipo === "pergunta") corpo.append(campo("Opções de resposta (marque)", listaOpcoes(e), "As opções vêm dos Serviços cadastrados. Até 3 viram botões no WhatsApp; até 10 viram lista. Sem nenhuma marcada, a pessoa escreve livremente."));
+      if (e.tipo === "memoria") corpo.append(campo("Valor", f("valor", entrada("va", e.valor || "")), "Pode usar {{nome}} etc."));
+      if (e.tipo === "tag") {
+        const tags = tagsConhecidas(); if (e.tag && !tags.includes(e.tag)) tags.push(e.tag);
+        const sel = seletor("tg", [["", "— escolha a etiqueta —"], ...tags.map((t) => [t, t]), ["__novo", "✎ Criar nova etiqueta…"]], e.tag || "");
+        const novo = entrada("tgn", "", { placeholder: "nome da etiqueta", maxlength: "30" }); novo.style.display = "none"; novo.style.marginTop = "6px";
+        sel.addEventListener("change", () => { if (sel.value === "__novo") { novo.style.display = ""; novo.focus(); } else { novo.style.display = "none"; e.tag = sel.value; } });
+        novo.addEventListener("change", () => { const t = novo.value.trim(); if (t) { e.tag = t; desenhar(); } });
+        corpo.append(campo("Etiqueta", h("div", null, sel, novo), "Escolha uma que já existe ou crie uma nova."));
+      }
+      if (e.tipo === "condicao") {
+        const vars = variaveisAte(i); if (e.variavel && !vars[e.variavel]) vars[e.variavel] = { rot: "(não existe mais)", opcoes: null };
+        const vsel = seletor("cv0", [["", "— escolha o que verificar —"], ...Object.entries(vars).map(([k, d]) => [k, `${k} — ${d.rot}`])], e.variavel || "");
+        vsel.addEventListener("change", () => { e.variavel = vsel.value; e.valor = ""; desenhar(); });
+        const op = seletor("op", OPERADORES_FLUXO, e.operador || "igual"); e.operador = op.value;
+        op.addEventListener("change", () => { e.operador = op.value; e.valor = ""; desenhar(); });
+        const opcoes = (vars[e.variavel] || {}).opcoes;
+        let valor = null;
+        if (["existe", "nao_existe"].includes(e.operador)) { e.valor = ""; }
+        else if (["maior", "menor"].includes(e.operador)) valor = f("valor", entrada("cv", e.valor || "", { type: "number", step: "any" }));
+        else if (opcoes && e.operador === "em_lista") {
+          const marc = new Set(String(e.valor || "").split(",").map((x) => x.trim()).filter(Boolean));
+          valor = h("div", { style: { display: "grid", gap: "4px" } }, opcoes.map((o) => { const cx = h("input", { type: "checkbox" }); cx.checked = marc.has(o);
+            cx.addEventListener("change", () => { cx.checked ? marc.add(o) : marc.delete(o); e.valor = opcoes.filter((x) => marc.has(x)).join(", "); }); return h("label", { class: "opcao-check" }, cx, " ", o); }));
+        } else if (opcoes) {
+          const sv = seletor("cv", [["", "— escolha a resposta —"], ...opcoes.map((o) => [o, o])], opcoes.includes(e.valor) ? e.valor : ""); sv.addEventListener("change", () => { e.valor = sv.value; }); valor = sv;
+        } else valor = f("valor", entrada("cv", e.valor || "", { placeholder: "texto a comparar" }));
+        corpo.append(campo("Verificar", vsel, e.variavel && SISTEMA[e.variavel] ? "Informação que o sistema já sabe sobre a pessoa." : "Só aparecem as memórias criadas nas etapas de cima."), campo("Quando", op),
+          valor ? campo(opcoes ? "Resposta" : "Valor", valor, opcoes ? "Só as respostas que existem aparecem aqui." : null) : null,
+          campo("Se sim, ir para", seletorEtapa(e, "ir_para", i, "— seguir para a próxima etapa —")),
+          campo("Se não, ir para", seletorEtapa(e, "senao_ir_para", i, "— seguir para a próxima etapa —")));
+      }
+      if (e.tipo === "handoff") {
+        const fl = seletor("fila", [["", "— escolha —"], ...filas.map((x) => [x.id, x.nome])], e.fila || ""); fl.addEventListener("change", () => { e.fila = fl.value; });
+        const dest = seletor("destino", [["fila", "Uma fila do atendimento"], ["sede", "Direto para a Sede (setores e igrejas não veem)"]], e.destino || "fila"); e.destino = dest.value;
+        const lib = h("input", { type: "checkbox" }); lib.checked = !!e.liberacao; lib.addEventListener("change", () => { e.liberacao = lib.checked; });
+        const caixaLib = campo("Precisa da liberação da Sede?", h("label", null, lib, " Sim — a Sede libera antes de responderem ao cliente"), null, true);
+        const ajustar = () => { e.destino = dest.value; caixaLib.style.display = dest.value === "sede" ? "" : "none"; if (dest.value !== "sede") { e.liberacao = false; lib.checked = false; } };
+        dest.addEventListener("change", ajustar); ajustar();
+        corpo.append(campo("Para onde vai", dest), campo("Fila (obrigatória se for para uma fila; opcional para a Sede)", fl), caixaLib, campo("Mensagem antes de passar (opcional)", f("texto", entrada("ht", e.texto || ""))));
+      }
+      if (e.tipo === "notificar") { const area = f("texto", areaTexto("nt", e.texto || "", { rows: 2 })); corpo.append(campo("Aviso para a Sede", h("div", null, area, inserirMemoria(e, area, i)), "Aparece nos Alertas da Sede. O robô continua.", true)); }
+      if (e.tipo === "encerrar") corpo.append(campo("Mensagem de encerramento (opcional)", f("texto", entrada("et", e.texto || "")), null, true));
+      const mover = (d) => { const j = i + d; if (j < 0 || j >= etapas.length) return; [etapas[i], etapas[j]] = [etapas[j], etapas[i]]; desenhar(); };
+      lista.append(h("div", { class: "etapa" }, h("div", { class: "cab" }, h("span", { class: "n", text: String(i + 1) }), h("b", { text: TIPOS_ETAPA[e.tipo] }),
+        h("span", { style: { marginLeft: "auto" } }), h("button", { class: "btn pequeno", type: "button", title: "Subir", text: "↑", on: { click: () => mover(-1) } }),
+        h("button", { class: "btn pequeno", type: "button", title: "Descer", text: "↓", on: { click: () => mover(1) } }),
+        h("button", { class: "btn pequeno perigo", type: "button", title: "Remover", text: "✕", on: { click: () => { etapas.splice(i, 1); desenhar(); } } })), corpo));
+    });
+  }
+  const tipoNovo = seletor("novo", Object.entries(TIPOS_ETAPA), "pergunta");
+  desenhar();
+  async function simular() {
+    const r = await api("/api/fluxos/simular", { dados: { como: { origem: como.value === "sede" ? "sede" : "unidade", unidade_tipo: como.value === "sede" ? "" : como.value }, etapas, entradas: entradas.value.split("\n").map((x) => x.trim()).filter(Boolean) } });
+    limpar(resultado);
+    if (r.erros.length) resultado.append(h("div", { class: "aviso", text: r.erros.join(" ") }));
+    r.conversa.forEach((m) => resultado.append(h("div", { class: "msg " + (m.de === "cliente" ? "entrada" : m.de === "robo" ? "robo" : "sistema") }, m.texto,
+      m.opcoes && m.opcoes.length ? h("div", { class: "opcoes-msg" }, m.opcoes.map((o) => h("span", { class: "selo s-azul", text: o }))) : null)));
+    resultado.append(h("div", { class: "suave", style: { marginTop: "8px" }, text: `Resultado: ${r.final || "—"}` }));
+    return r;
+  }
+  const conteudo = h("div", null, cab, h("h3", { text: "Etapas" }), lista,
+    h("div", { class: "acoes" }, h("div", { style: { width: "220px" } }, tipoNovo), h("button", { class: "btn", type: "button", text: "+ Adicionar etapa", on: { click: () => { etapas.push({ tipo: tipoNovo.value }); desenhar(); } } })),
+    h("h3", { text: "Simulação segura (nada é enviado a ninguém)" }), campo("Simular como", como), h("div", { class: "grade duas" }, campo("Respostas do cliente", entradas), resultado),
+    h("button", { class: "btn", type: "button", style: { marginTop: "8px" }, text: "▶ Simular", on: { click: () => simular().catch(falha) } }));
+  let id = fluxo ? fluxo.id : null;
+  const salvar = async () => { const r = await api(id ? "/api/fluxos/" + id : "/api/fluxos", { metodo: id ? "PUT" : "POST", dados: { ...lerFormulario(cab), etapas } }); id = r.id; return r; };
+  const acoes = [{ texto: "Fechar" }, { texto: "Salvar rascunho", fecha: false, acao: async () => { await salvar(); toast("Fluxo salvo."); } }];
+  if (pode("fluxos", "publicar")) acoes.push({ texto: "Simular e publicar", classe: "primario", acao: async () => {
+    await salvar();
+    const r = await api(`/api/fluxos/${id}/simular`, { dados: { como: { origem: como.value === "sede" ? "sede" : "unidade", unidade_tipo: como.value === "sede" ? "" : como.value }, entradas: entradas.value.split("\n").map((x) => x.trim()).filter(Boolean) } });
+    if (!r.ok) { await simular(); throw new Error("A simulação encontrou problemas: " + r.erros.join(" ")); }
+    await api(`/api/fluxos/${id}/publicar`, { dados: { publicar: true } }); toast("Fluxo publicado."); mostrarTela();
+  } });
+  modal({ titulo: fluxo ? fluxo.nome : "Novo fluxo", subtitulo: "O robô segue as etapas exatamente nesta ordem — sem inventar respostas.", conteudo, acoes, larga: true, aoFechar: () => { if (App.atual === "flows") mostrarTela(); } });
+}
+
+registrarTela("flows", {
+  titulo: "Fluxos", sub: "Robô de atendimento com etapas fixas e simulação antes de publicar.", icone: "⌘",
+  async render(el, { acoes }) {
+    const fluxos = await api("/api/fluxos");
+    if (pode("fluxos", "criar")) acoes.append(h("button", { class: "btn primario", type: "button", text: "+ Novo fluxo", on: { click: () => editarFluxo(null) } }));
+    const GATILHOS = { sempre: "sempre", palavra_chave: "palavra-chave", manual: "manual" };
+    el.append(h("div", { class: "grade tres" },
+      h("div", { class: "cartao" }, h("h2", { text: "Fluxos" }), fluxos.length ? fluxos.map((f) => h("div", { class: "item clicavel", on: { click: () => editarFluxo(f) } },
+        h("div", null, h("b", { text: f.nome }), h("div", { class: "suave", text: `${f.status === "publicado" ? "publicado" : "rascunho"} • ${GATILHOS[f.gatilho_tipo]}${f.gatilho_valor ? ": " + f.gatilho_valor : ""} • ${f.etapas.length} etapas` })),
+        f.status === "publicado" ? selo("publicado") : selo("rascunho"))) : h("div", { class: "vazio", text: "Sem fluxos. Sem fluxo publicado, toda conversa vai direto para a fila." })),
+      h("div", { class: "cartao" }, h("h2", { text: "Etapas suportadas" }), h("p", { class: "suave", text: "Mensagem • Pergunta • Memória • Etiqueta • Condição • Passar para humano • Encerramento" }),
+        h("p", { class: "suave", text: "Quando mais de um fluxo está publicado, vale primeiro o de palavra-chave; depois o de “sempre”." })),
+      h("div", { class: "cartao" }, h("h2", { text: "Governança" }), h("p", { class: "suave", text: "Todo fluxo só é publicado depois de uma simulação sem erros. Qualquer mudança volta o fluxo para rascunho." }),
+        pode("recepcao", "usar") ? h("div", null, h("h3", { text: "Recepção por roteiro (protocolo ALFA)" }), h("p", { class: "suave", text: "O roteiro de recepção/entrevista que já existia no ALFA continua disponível para totem e balcão." }),
+          h("a", { class: "btn", href: "/recepcao", target: "_blank", rel: "noopener", text: "Abrir recepção" })) : null)));
+  },
+});
+
+/* ================================================================ AGENDA */
+registrarTela("agenda", {
+  titulo: "Agenda", sub: "Disponibilidade, conflitos de horário e lembretes.", icone: "◷",
+  async render(el, { acoes }) {
+    const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+    const [itens, contatos, filas, equipe] = await Promise.all([
+      api("/api/agenda?de=" + encodeURIComponent(new Date(hoje.getTime() - 86400000).toISOString())),
+      api("/api/contatos"), api("/api/filas"), api("/api/equipe")]);
+    const editar = (a) => {
+      const inicio = a ? new Date(a.inicio) : new Date(Date.now() + 3600000);
+      const local = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      const duracao = a ? Math.round((new Date(a.fim) - new Date(a.inicio)) / 60000) : 60;
+      const form = h("div", { class: "formulario" },
+        campo("Título", entrada("titulo", a ? a.titulo : "", { placeholder: "Visita técnica" })),
+        campo("Data e hora", entrada("inicio_local", local(inicio), { type: "datetime-local" })),
+        campo("Duração (minutos)", entrada("duracao_minutos", duracao, { type: "number", min: 5 })),
+        campo("Status", seletor("status", [["agendado", "Agendado"], ["confirmado", "Confirmado"], ["aguardando", "Aguardando"], ["concluido", "Concluído"], ["cancelado", "Cancelado"]], a ? a.status : "agendado")),
+        campo("Nome", seletor("contato_id", [["", "—"], ...contatos.map((c) => [c.id, c.nome])], a ? a.contato_id || "" : "")),
+        campo("Equipe", seletor("fila_id", [["", "—"], ...filas.map((f) => [f.id, f.nome])], a ? a.fila_id || "" : "")),
+        campo("Responsável", seletor("responsavel_id", [["", "—"], ...equipe.map((u) => [u.id, u.nome])], a ? a.responsavel_id || "" : ""), "Usado para avisar conflito de horário."),
+        campo("Lembrete (minutos antes)", entrada("lembrete_minutos", a ? a.lembrete_minutos : 60, { type: "number", min: 0 })),
+        campo("Observação", areaTexto("observacao", a ? a.observacao || "" : ""), null, true));
+      const enviar = async (forcar) => {
+        const d = lerFormulario(form);
+        d.inicio = new Date(d.inicio_local).toISOString(); d.fim = new Date(new Date(d.inicio_local).getTime() + Number(d.duracao_minutos || 60) * 60000).toISOString();
+        delete d.inicio_local; d.forcar = forcar;
+        return api(a ? "/api/agenda/" + a.id : "/api/agenda", { metodo: a ? "PUT" : "POST", dados: d });
+      };
+      modal({ titulo: a ? "Editar agendamento" : "Novo agendamento", conteudo: form, acoes: [{ texto: "Cancelar" }, { texto: "Salvar", classe: "primario", acao: async () => {
+        try { await enviar(false); }
+        catch (e) { if (e.status !== 409) throw e; if (!(await confirmar(e.message, "Agendar mesmo assim"))) return false; await enviar(true); }
+        toast("Agendamento salvo."); mostrarTela();
+      } }] });
+    };
+    if (pode("agenda", "criar")) acoes.append(h("button", { class: "btn primario", type: "button", text: "+ Novo agendamento", on: { click: () => editar(null) } }));
+    const porDia = {};
+    itens.forEach((a) => { const d = new Date(a.inicio).toLocaleDateString("pt-BR", { timeZone: fuso(), weekday: "long", day: "2-digit", month: "2-digit" }); (porDia[d] = porDia[d] || []).push(a); });
+    const cartao = h("div", { class: "cartao" });
+    if (!itens.length) cartao.append(h("div", { class: "vazio", text: "Nenhum agendamento a partir de ontem." }));
+    Object.entries(porDia).forEach(([dia, lista]) => {
+      cartao.append(h("h3", { text: dia.charAt(0).toUpperCase() + dia.slice(1) }), tabela([
+        { titulo: "Horário", valor: (a) => `${hora(a.inicio)}–${hora(a.fim)}` }, { titulo: "Título", valor: (a) => a.titulo },
+        { titulo: "Nome", valor: (a) => a.contato_nome || "—" }, { titulo: "Equipe", valor: (a) => a.fila_nome || "—" },
+        { titulo: "Responsável", valor: (a) => a.responsavel_nome || "—" }, { titulo: "Status", valor: (a) => selo(a.status) },
+        { titulo: "Observação", valor: (a) => a.observacao || "—" },
+      ], lista, pode("agenda", "editar") ? editar : null));
+    });
+    el.append(cartao);
+  },
+});

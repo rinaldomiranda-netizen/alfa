@@ -8,8 +8,10 @@ from datetime import datetime, timezone
 
 from . import fluxos as motor
 from .db import agora, para_datahora, somar_minutos
+from .duplicidade import chave_nome
 from .nucleo import Ator, ErroNegocio, NaoEncontrado, _texto, novo_id
 
+CHAVES_DO_SISTEMA = ("nome", "empresa", "canal", "unidade", "unidade_tipo", "igreja", "origem")
 STATUS_CONVERSA = ("novo", "robo", "aguardando", "em_atendimento", "resolvido")
 CANAIS = ("web", "whatsapp", "portal", "interno")
 STATUS_CONTATO = ("novo", "ativo", "inativo")
@@ -106,11 +108,15 @@ class ConversasMixin:
 
     def criar_contato(self, ator: Ator, dados: dict) -> dict:
         ator.exigir("contatos", "criar")
-        return self._criar_contato(ator.empresa, dados, ator)
-
-    def _criar_contato(self, empresa_id: str, dados: dict, ator: Ator | None = None) -> dict:
         valores = self._limpar_contato(dados)
-        if valores["whatsapp"] and self.banco.um(
+        resultado = self._resolver_duplicidade_criacao(ator, dados, valores)
+        if resultado is not None:
+            return resultado
+        return self._criar_contato(ator.empresa, dados, ator, _sem_checar=True)
+
+    def _criar_contato(self, empresa_id: str, dados: dict, ator: Ator | None = None, _sem_checar: bool = False) -> dict:
+        valores = self._limpar_contato(dados)
+        if not _sem_checar and valores["whatsapp"] and self.banco.um(
                 "SELECT 1 AS x FROM contatos WHERE empresa_id=? AND whatsapp=?", (empresa_id, valores["whatsapp"])):
             raise ErroNegocio("Já existe um nome cadastrado com esse telefone/WhatsApp.")
         contato_id = novo_id()
@@ -130,16 +136,31 @@ class ConversasMixin:
         ator.exigir("contatos", "editar")
         atual = self.obter_contato(ator, contato_id)
         valores = self._limpar_contato(dados, atual)
-        if valores["whatsapp"] and self.banco.um(
+        dec = dados.get("duplicidade")
+        if isinstance(dec, dict) and dec.get("acao") == "mesclar" and dec.get("id"):
+            # grava a edição neste cadastro e junta com o outro; "manter" diz qual dos dois fica
+            self._gravar_contato(ator, contato_id, valores)
+            fica, sai = (contato_id, dec["id"]) if dec.get("manter", "este") == "este" else (dec["id"], contato_id)
+            return self.mesclar_contatos(ator, fica, sai)
+        mudou = (chave_nome(valores["nome"]) != chave_nome(atual.get("nome")) or valores["telefone"] != atual.get("telefone")
+                 or valores["whatsapp"] != atual.get("whatsapp"))
+        if not mudou:
+            pass
+        elif not dados.get("_sem_duplicidade") and not (isinstance(dec, dict) and dec.get("acao") == "criar"):
+            self._checar_duplicidade(ator.empresa, valores, ignorar=contato_id)
+        elif valores["whatsapp"] and self.banco.um(
                 "SELECT 1 AS x FROM contatos WHERE empresa_id=? AND whatsapp=? AND id<>?", (ator.empresa, valores["whatsapp"], contato_id)):
             raise ErroNegocio("Já existe outro nome com esse telefone/WhatsApp.")
+        self._gravar_contato(ator, contato_id, valores)
+        return self.obter_contato(ator, contato_id)
+
+    def _gravar_contato(self, ator: Ator, contato_id: str, valores: dict) -> None:
         self.banco.executar(
             "UPDATE contatos SET nome=?, telefone=?, whatsapp=?, email=?, tags=?, observacoes=?, status=? WHERE id=?",
             (valores["nome"], valores["telefone"], valores["whatsapp"], valores["email"], valores["tags"],
              valores["observacoes"], valores["status"], contato_id),
         )
         self.auditar(ator, "contato.editar", contato_id)
-        return self.obter_contato(ator, contato_id)
 
     def anonimizar_contato(self, ator: Ator, contato_id: str) -> dict:
         """Pedido de exclusão (LGPD): apaga os dados pessoais, mas mantém o
@@ -238,6 +259,7 @@ class ConversasMixin:
     def listar_conversas(self, ator: Ator, status: str = "", busca: str = "", minhas: bool = False, limite: int = 100) -> list[dict]:
         ator.exigir("conversas", "ver")
         sql = """SELECT c.*, ct.nome AS contato_nome, ct.whatsapp AS contato_whatsapp, f.nome AS fila_nome, u.nome AS responsavel_nome,
+                    (SELECT g.nome FROM igreja_cargos g WHERE g.id=u.cargo_id) AS responsavel_cargo,
                     (SELECT texto FROM mensagens m WHERE m.conversa_id=c.id ORDER BY m.criada_em DESC, m.rowid DESC LIMIT 1) AS ultima_mensagem
                  FROM conversas c JOIN contatos ct ON ct.id=c.contato_id
                  LEFT JOIN filas f ON f.id=c.fila_id LEFT JOIN usuarios u ON u.id=c.responsavel_id
@@ -275,10 +297,17 @@ class ConversasMixin:
     def _conversa_completa(self, conversa: dict) -> dict:
         contato = self.banco.um("SELECT * FROM contatos WHERE id=?", (conversa["contato_id"],))
         mensagens = self.banco.todos("SELECT * FROM mensagens WHERE conversa_id=? ORDER BY criada_em, rowid", (conversa["id"],))
+        autores = {a["id"]: a for a in self.banco.todos(
+            "SELECT u.id, u.nome, g.nome AS cargo FROM usuarios u LEFT JOIN igreja_cargos g ON g.id=u.cargo_id WHERE u.empresa_id=?",
+            (conversa["empresa_id"],))}
         for m in mensagens:
             m["payload"] = json.loads(m["payload"]) if m["payload"] else None
+            if m.get("autor_tipo") == "usuario" and m.get("autor_id") in autores:
+                m["autor_nome"], m["autor_cargo"] = autores[m["autor_id"]]["nome"], autores[m["autor_id"]]["cargo"]
         extra = self.banco.um(
-            "SELECT f.nome AS fila_nome, u.nome AS responsavel_nome FROM conversas c LEFT JOIN filas f ON f.id=c.fila_id LEFT JOIN usuarios u ON u.id=c.responsavel_id WHERE c.id=?",
+            """SELECT f.nome AS fila_nome, u.nome AS responsavel_nome, g.nome AS responsavel_cargo FROM conversas c
+               LEFT JOIN filas f ON f.id=c.fila_id LEFT JOIN usuarios u ON u.id=c.responsavel_id
+               LEFT JOIN igreja_cargos g ON g.id=u.cargo_id WHERE c.id=?""",
             (conversa["id"],),
         ) or {}
         resultado = {k: v for k, v in conversa.items() if k not in ("token_publico", "fluxo_estado")}
@@ -333,7 +362,7 @@ class ConversasMixin:
         sla = somar_minutos(agora(), fila["sla_minutos"]) if fila and not conversa["primeira_resposta_em"] else conversa["sla_vence_em"]
         responsavel = None
         config = self.banco.um("SELECT atribuicao_automatica FROM config_empresa WHERE empresa_id=?", (conversa["empresa_id"],)) or {}
-        if config.get("atribuicao_automatica") and fila:
+        if config.get("atribuicao_automatica") and fila and not conversa.get("exclusiva_sede"):
             livre = self.banco.um(
                 """SELECT u.id FROM usuarios u WHERE u.empresa_id=? AND u.fila_id=? AND u.ativo=1 AND u.presenca='online'
                      AND u.perfil IN ('atendente','supervisor')
@@ -363,7 +392,9 @@ class ConversasMixin:
                 return self._colocar_na_fila(conversa, None)
         contato = self.banco.um("SELECT nome FROM contatos WHERE id=?", (conversa["contato_id"],)) or {}
         config = self.obter_config(conversa["empresa_id"])
-        contexto = {"nome": (contato.get("nome") or "").split(" ")[0], "empresa": config["empresa_nome"]}
+        contexto = {"nome": (contato.get("nome") or "").split(" ")[0], "empresa": config["empresa_nome"], "canal": conversa["canal"]}
+        contexto_igreja = getattr(self, "_contexto_igreja", None)
+        contexto.update(contexto_igreja(conversa["empresa_id"], conversa["contato_id"]) if contexto_igreja else {})
         resultado = motor.avancar(json.loads(fluxo["etapas"]), estado, entrada_para_motor, contexto)
         for saida in resultado.saidas:
             self._saida_do_robo(conversa, saida)
@@ -371,7 +402,7 @@ class ConversasMixin:
         memoria = resultado.estado.get("vars", {})
         self.banco.executar(
             "UPDATE contatos SET dados=json_patch(COALESCE(dados,'{}'), ?) WHERE id=?",
-            (json.dumps({k: v for k, v in memoria.items() if k not in ("nome", "empresa")}, ensure_ascii=False), conversa["contato_id"]),
+            (json.dumps({k: v for k, v in memoria.items() if k not in CHAVES_DO_SISTEMA}, ensure_ascii=False), conversa["contato_id"]),
         )
         if resultado.acao is None:
             self.banco.executar("UPDATE conversas SET status='robo', fluxo_estado=?, atualizada_em=? WHERE id=?",
@@ -379,9 +410,42 @@ class ConversasMixin:
             return self._conversa(conversa["empresa_id"], conversa["id"])
         self.banco.executar("UPDATE conversas SET fluxo_estado=? WHERE id=?", (json.dumps(resultado.estado, ensure_ascii=False), conversa["id"]))
         conversa = self._conversa(conversa["empresa_id"], conversa["id"])
+        for aviso in resultado.notificacoes:
+            self._novo_alerta(conversa["empresa_id"], f"fluxo:{conversa['id']}:{novo_id()}", "conversa", "atencao",
+                              f"Aviso do fluxo — atendimento #{conversa['numero']}", aviso, conversa["id"])
         if resultado.acao == "encerrar":
             return self._finalizar(conversa, None, pedir_avaliacao=False)
+        if resultado.acao == "handoff" and resultado.destino == "sede":
+            return self._encaminhar_para_sede(conversa, resultado.fila_id, resultado.exige_liberacao)
         return self._colocar_na_fila(conversa, resultado.fila_id)
+
+    def _encaminhar_para_sede(self, conversa: dict, fila_id: str | None, exige_liberacao: bool) -> dict:
+        """Pedido que só a Sede resolve: sai da fila das igrejas/setores e vai direto para a Administração da Sede."""
+        self.banco.executar(
+            "UPDATE conversas SET exclusiva_sede=1, liberacao=?, liberacao_nota=NULL, liberacao_em=NULL WHERE id=?",
+            ("pendente" if exige_liberacao else None, conversa["id"]))
+        conversa = self._colocar_na_fila(self._conversa(conversa["empresa_id"], conversa["id"]), fila_id)
+        texto = "Pedido encaminhado direto à Sede" + (" — aguardando a liberação da Sede." if exige_liberacao else ".")
+        self._gravar_mensagem(conversa, "sistema", "sistema", texto)
+        self._novo_alerta(conversa["empresa_id"], f"sede:{conversa['id']}", "conversa", "atencao",
+                          f"Pedido para a Sede — atendimento #{conversa['numero']}", texto, conversa["id"])
+        return self._conversa(conversa["empresa_id"], conversa["id"])
+
+    def decidir_liberacao(self, ator: Ator, conversa_id: str, liberar: bool, nota: str | None = None) -> dict:
+        """A Sede libera (ou não) um pedido que dependia da aprovação dela."""
+        ator.exigir("conversas", "responder")
+        if ator.perfil not in ("owner", "admin"):
+            raise ErroNegocio("Só a Administração da Sede pode liberar este tipo de pedido.")
+        conversa = self._exigir_conversa_visivel(ator, conversa_id)
+        if conversa.get("liberacao") != "pendente":
+            raise ErroNegocio("Este atendimento não está esperando liberação.")
+        nota = (nota or "").strip()[:500] or None
+        self.banco.executar("UPDATE conversas SET liberacao=?, liberacao_nota=?, liberacao_em=?, atualizada_em=? WHERE id=?",
+                            ("liberada" if liberar else "negada", nota, agora(), agora(), conversa_id))
+        self._gravar_mensagem(conversa, "sistema", "sistema",
+                              f"{'Liberado' if liberar else 'Não liberado'} pela Sede ({ator.nome})." + (f" Observação: {nota}" if nota else ""))
+        self.auditar(ator, "atendimento.liberar" if liberar else "atendimento.negar", conversa_id)
+        return self.obter_conversa(ator, conversa_id)
 
     def receber_mensagem(self, empresa_id: str, contato_id: str, canal: str, texto: str, canal_id: str | None = None,
                          externo_id: str | None = None, payload=None) -> dict:
@@ -417,6 +481,8 @@ class ConversasMixin:
         ator.exigir("conversas", "responder")
         texto = _texto(texto, "mensagem", maximo=4000)
         conversa = self._exigir_conversa_visivel(ator, conversa_id)
+        if conversa.get("liberacao") == "pendente":
+            raise ErroNegocio("Este pedido espera a liberação da Sede. Libere (ou negue) antes de responder.")
         if conversa["status"] == "resolvido":
             raise ErroNegocio("Este atendimento já foi resolvido. Abra um novo.")
         mensagem = self._gravar_mensagem(conversa, "saida", "usuario", texto, autor_id=ator.usuario_id)

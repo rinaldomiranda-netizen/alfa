@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 from datetime import date
 
-from . import seguranca
+from . import ponte_qr, seguranca
 from .conversas import normalizar_telefone
 from .db import agora, somar_minutos
 from .nucleo import Ator, ErroNegocio, NaoAutenticado, NaoEncontrado, _texto, novo_id
@@ -97,6 +97,7 @@ class CanaisMixin:
             **{k: canal[k] for k in ("id", "nome", "numero_exibicao", "phone_number_id", "waba_id", "versao_api", "ativo", "ultimo_evento_em", "criado_em")},
             "access_token": _mascarar(canal["access_token"]), "app_secret": _mascarar(canal["app_secret"]),
             "verify_token": canal["verify_token"],
+            "modo": canal.get("modo") or "oficial", "qr_estado": canal.get("qr_estado"), "qr_numero": canal.get("qr_numero"),
         }
 
     def _canal_whatsapp_ativo(self, empresa_id: str) -> dict | None:
@@ -119,7 +120,7 @@ class CanaisMixin:
             (ator.empresa, hoje),
         ) or {}
         return {"canais": canais, "hoje": {k: int(v or 0) for k, v in contagem.items()},
-                "endereco_webhook": "/webhooks/whatsapp"}
+                "endereco_webhook": "/webhooks/whatsapp", "qr_disponivel": ponte_qr.disponivel(self._pasta_dados_qr())}
 
     def salvar_canal_whatsapp(self, ator: Ator, dados: dict, canal_id: str | None = None) -> dict:
         ator.exigir("whatsapp", "configurar")
@@ -128,6 +129,10 @@ class CanaisMixin:
             atual = self.banco.um("SELECT * FROM whatsapp_canais WHERE id=? AND empresa_id=?", (canal_id, ator.empresa))
             if not atual:
                 raise NaoEncontrado("Canal não encontrado.")
+            if atual.get("modo") == "qr":  # canal por QR Code: só nome e ligado/desligado
+                self.banco.executar("UPDATE whatsapp_canais SET nome=?, ativo=? WHERE id=?",
+                                    (_texto(dados.get("nome") or atual["nome"], "nome", maximo=60), 1 if dados.get("ativo", atual["ativo"]) else 0, canal_id))
+                return self._canal_publico(self.banco.um("SELECT * FROM whatsapp_canais WHERE id=?", (canal_id,)))
         nome = _texto(dados.get("nome") or (atual or {}).get("nome") or "WhatsApp", "nome", maximo=60)
         phone_number_id = _texto(dados.get("phone_number_id") or (atual or {}).get("phone_number_id"), "Phone number ID", maximo=40)
         if not phone_number_id.isdigit():
@@ -170,6 +175,8 @@ class CanaisMixin:
 
     # ================================================================ WHATSAPP — envio
     def _enviar_whatsapp(self, canal: dict, para: str, corpo: dict) -> tuple[bool, str | None, str | None]:
+        if canal.get("modo") == "qr":
+            return self._enviar_whatsapp_qr(canal, para, corpo)
         url = f"{GRAPH}/{canal['versao_api']}/{canal['phone_number_id']}/messages"
         dados = {"messaging_product": "whatsapp", "recipient_type": "individual", "to": para, **corpo}
         try:
@@ -220,7 +227,8 @@ class CanaisMixin:
             self.banco.executar("UPDATE mensagens SET status_entrega='falhou', erro=? WHERE id=?", (motivo, mensagem["id"]))
             self._alerta_falha_whatsapp(conversa, mensagem["id"], motivo)
             return
-        ok, externo_id, erro = self._enviar_whatsapp(canal, contato["whatsapp"], self._corpo_whatsapp(texto, opcoes))
+        corpo = self._corpo_whatsapp(texto, opcoes) if canal.get("modo") != "qr" else self._corpo_texto_qr(texto, opcoes)
+        ok, externo_id, erro = self._enviar_whatsapp(canal, contato["whatsapp"], corpo)
         self.banco.executar(
             "UPDATE mensagens SET status_entrega=?, externo_id=?, erro=? WHERE id=?",
             ("enviado" if ok else "falhou", externo_id, erro, mensagem["id"]),
@@ -338,6 +346,97 @@ class CanaisMixin:
             self._alerta_falha_whatsapp({"empresa_id": canal["empresa_id"], "numero": mensagem["numero"], "id": mensagem["conversa_id"]},
                                         mensagem["id"], erro)
         return 1
+
+    # ================================================================ WHATSAPP por QR Code (WhatsApp Web)
+    # Não é a conexão oficial da Meta: o número pode ser bloqueado. Uma sessão por canal; o robô e os fluxos
+    # funcionam igual (as opções viram uma lista numerada, e a pessoa responde com o número).
+    def _pasta_dados_qr(self):
+        return self.banco.caminho.parent
+
+    @staticmethod
+    def _corpo_texto_qr(texto: str, opcoes: list[str]) -> dict:
+        if opcoes:
+            texto = texto + "\n\n" + "\n".join(f"{n}. {o}" for n, o in enumerate(opcoes, 1)) + "\n\nResponda com o número da opção."
+        return {"type": "text", "text": {"body": texto[:4096]}}
+
+    def _enviar_whatsapp_qr(self, canal: dict, para: str, corpo: dict) -> tuple[bool, str | None, str | None]:
+        texto = ((corpo.get("text") or {}).get("body")) or ""
+        if not texto:
+            return False, None, "Este tipo de mensagem não é aceito na conexão por QR Code."
+        try:
+            r = ponte_qr.chamar(self._pasta_dados_qr(), "POST", "/enviar", {"canal_id": canal["id"], "para": para, "texto": texto}, timeout=30)
+        except OSError as erro:
+            return False, None, str(erro)
+        return True, r.get("id"), None
+
+    def conectar_whatsapp_qr(self, ator: Ator, nome: str | None = None) -> dict:
+        """Cria um canal por QR Code (ou reaproveita o que está desconectado) e liga a sessão para mostrar o QR."""
+        ator.exigir("whatsapp", "configurar")
+        if not ponte_qr.disponivel(self._pasta_dados_qr()):
+            raise ErroNegocio("A conexão por QR Code não está disponível neste servidor (a ponte do WhatsApp não está ligada).")
+        canal = self.banco.um("SELECT * FROM whatsapp_canais WHERE empresa_id=? AND modo='qr' AND COALESCE(qr_estado,'')<>'conectado' ORDER BY criado_em DESC LIMIT 1",
+                              (ator.empresa,))
+        if not canal:
+            canal_id = novo_id().replace("-", "")
+            self.banco.executar(
+                """INSERT INTO whatsapp_canais(id, empresa_id, nome, numero_exibicao, phone_number_id, waba_id, access_token, app_secret,
+                   verify_token, versao_api, ativo, criado_em, modo, qr_estado) VALUES (?,?,?,?,?,?,?,?,?,?,1,?,'qr','iniciando')""",
+                (canal_id, ator.empresa, _texto(nome or "WhatsApp (QR Code)", "nome", maximo=60), None, f"qr-{canal_id}", None, "", None,
+                 secrets.token_urlsafe(18), "qr", agora()))
+            self._verificar_limite_canais(ator.empresa)
+            self.auditar(ator, "whatsapp.qr_criar", canal_id)
+        else:
+            canal_id = canal["id"]
+        ponte_qr.chamar(self._pasta_dados_qr(), "POST", "/sessao", {"canal_id": canal_id})
+        return self._canal_publico(self.banco.um("SELECT * FROM whatsapp_canais WHERE id=?", (canal_id,)))
+
+    def estado_whatsapp_qr(self, ator: Ator, canal_id: str) -> dict:
+        ator.exigir("whatsapp", "configurar")
+        canal = self.banco.um("SELECT * FROM whatsapp_canais WHERE id=? AND empresa_id=? AND modo='qr'", (canal_id, ator.empresa))
+        if not canal:
+            raise NaoEncontrado("Canal não encontrado.")
+        return {"estado": canal["qr_estado"] or "iniciando", "qr": canal["qr_codigo"] if canal["qr_estado"] == "aguardando_qr" else None,
+                "numero": canal["qr_numero"]}
+
+    def desconectar_whatsapp_qr(self, ator: Ator, canal_id: str) -> dict:
+        ator.exigir("whatsapp", "configurar")
+        canal = self.banco.um("SELECT * FROM whatsapp_canais WHERE id=? AND empresa_id=? AND modo='qr'", (canal_id, ator.empresa))
+        if not canal:
+            raise NaoEncontrado("Canal não encontrado.")
+        try:
+            ponte_qr.chamar(self._pasta_dados_qr(), "POST", "/desconectar", {"canal_id": canal_id})
+        except OSError:
+            pass
+        self.banco.executar("UPDATE whatsapp_canais SET qr_estado='desconectado', qr_codigo=NULL, qr_numero=NULL WHERE id=?", (canal_id,))
+        self.auditar(ator, "whatsapp.qr_desconectar", canal_id)
+        return {"ok": True}
+
+    def whatsapp_qr_receber(self, dados: dict) -> int:
+        """Aviso da ponte (estado, mensagem recebida ou status de entrega). A autenticação é feita na rota."""
+        canal = self.banco.um("SELECT * FROM whatsapp_canais WHERE id=? AND modo='qr'", (str(dados.get("canal_id") or ""),))
+        if not canal:
+            return 0
+        tipo = dados.get("tipo")
+        if tipo == "estado":
+            estado = str(dados.get("estado") or "")[:30]
+            numero = normalizar_telefone(dados.get("numero")) if dados.get("numero") else None
+            self.banco.executar(
+                "UPDATE whatsapp_canais SET qr_estado=?, qr_codigo=?, qr_numero=COALESCE(?, CASE WHEN ?='desconectado' THEN NULL ELSE qr_numero END), "
+                "numero_exibicao=COALESCE(?, numero_exibicao), ultimo_evento_em=? WHERE id=?",
+                (estado, str(dados.get("qr") or "")[:600] or None, numero, estado, f"+{numero}" if numero else None, agora(), canal["id"]))
+            return 1
+        self.banco.executar("UPDATE whatsapp_canais SET ultimo_evento_em=? WHERE id=?", (agora(), canal["id"]))
+        if tipo == "mensagem":
+            de = normalizar_telefone(dados.get("de"))
+            if not de:
+                return 0
+            texto = str(dados.get("texto") or "").strip()
+            mensagem = {"id": dados.get("id"), "from": de, "type": "text", "text": {"body": texto}} if texto else \
+                       {"id": dados.get("id"), "from": de, "type": "mídia"}
+            return self._whatsapp_mensagem(canal, mensagem, {de: dados.get("nome")})
+        if tipo == "status":
+            return self._whatsapp_status(canal, {"id": dados.get("id"), "status": dados.get("status")})
+        return 0
 
     # ================================================================ API PÚBLICA V1
     def listar_chaves_api(self, ator: Ator) -> list[dict]:

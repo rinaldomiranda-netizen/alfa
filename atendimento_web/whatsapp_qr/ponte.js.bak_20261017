@@ -1,0 +1,183 @@
+/* Ponte do WhatsApp por QR Code (WhatsApp Web) — RMD Atendimento.
+ *
+ * Processo separado, só escuta em 127.0.0.1. O servidor Python fala com ele por HTTP local,
+ * sempre com o cabeçalho x-segredo. Cada igreja/canal tem a sua própria sessão (pasta em
+ * PONTE_DADOS/<canal_id>); a sessão sobrevive a reinícios (precisa de disco persistente).
+ *
+ * AVISO: usa o protocolo do WhatsApp Web, que NÃO é a conexão oficial da Meta. Pode haver
+ * bloqueio do número. Use número de teste/secundário.
+ *
+ * Variáveis: PONTE_PORTA, PONTE_SEGREDO, PY_URL, PONTE_DADOS, PONTE_SIMULADO=1 (testes, sem WhatsApp).
+ */
+"use strict";
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+
+const PORTA = Number(process.env.PONTE_PORTA || 8787);
+const SEGREDO = process.env.PONTE_SEGREDO || "";
+let PY_URL = (process.env.PY_URL || "http://127.0.0.1:8080").replace(/\/$/, "");
+const DADOS = process.env.PONTE_DADOS || path.join(__dirname, "sessoes");
+const VERSAO = 4;
+const SIMULADO = process.env.PONTE_SIMULADO === "1";
+if (!SEGREDO) { console.error("[ponte] PONTE_SEGREDO não definido; encerrando."); process.exit(2); }
+fs.mkdirSync(DADOS, { recursive: true });
+
+const sessoes = new Map(); // canal_id -> { sock, estado, numero, parando, tentativas }
+const enviadasSimuladas = [];
+const log = (...a) => {
+  const linha = `${new Date().toISOString()} [ponte] ${a.join(" ")}`;
+  console.log(linha);
+  try { fs.mkdirSync(DADOS, { recursive: true }); fs.appendFileSync(path.join(DADOS, "..", "whatsapp_qr_ponte.log"), linha + "\n"); } catch (e) { /* sem log em arquivo */ }
+};
+const idValido = (id) => /^[a-f0-9]{8,64}$/i.test(String(id || ""));
+
+/* ------------------------------------------------ avisos para o servidor Python */
+async function avisar(corpo) {
+  for (let t = 0; t < 3; t++) {
+    try {
+      const r = await fetch(PY_URL + "/webhooks/whatsapp-qr", {
+        method: "POST", headers: { "content-type": "application/json", "x-segredo": SEGREDO }, body: JSON.stringify(corpo),
+      });
+      if (r.ok) return true;
+      log("o servidor recusou o aviso", corpo.tipo, "HTTP", r.status, "(", PY_URL, ")");
+    } catch (e) { log("não consegui falar com o servidor em", PY_URL, "-", e.message); }
+    await new Promise((ok) => setTimeout(ok, 1500 * (t + 1)));
+  }
+  return false;
+}
+
+/* ------------------------------------------------ sessão real (Baileys) */
+function textoDe(msg) {
+  const m = msg.message || {};
+  const eph = m.ephemeralMessage && m.ephemeralMessage.message ? m.ephemeralMessage.message : m;
+  return eph.conversation || (eph.extendedTextMessage && eph.extendedTextMessage.text)
+    || (eph.buttonsResponseMessage && eph.buttonsResponseMessage.selectedDisplayText)
+    || (eph.listResponseMessage && eph.listResponseMessage.title) || null;
+}
+function telefoneDe(key) {
+  const alt = key.remoteJidAlt || key.participantAlt || "";
+  const jid = (String(key.remoteJid || "").endsWith("@lid") && alt) ? alt : (key.remoteJid || "");
+  return String(jid).split("@")[0].split(":")[0].replace(/\D/g, "");
+}
+
+async function iniciar(canalId) {
+  if (!idValido(canalId)) throw new Error("canal inválido");
+  const atual = sessoes.get(canalId);
+  if (atual && !atual.parando) return atual;
+  const s = atual || { sock: null, estado: "iniciando", numero: null, parando: false, tentativas: 0 };
+  s.parando = false; sessoes.set(canalId, s);
+  if (SIMULADO) { s.estado = "aguardando_qr"; await avisar({ tipo: "estado", canal_id: canalId, estado: "aguardando_qr", qr: "SIMULADO-" + canalId }); return s; }
+
+  const B = await import("@whiskeysockets/baileys");
+  const makeWASocket = B.makeWASocket || B.default;
+  const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = B;
+  const pino = require("pino");
+  const pasta = path.join(DADOS, canalId);
+  const { state, saveCreds } = await useMultiFileAuthState(pasta);
+  let version; try { ({ version } = await fetchLatestBaileysVersion()); } catch (e) { /* usa a padrão da biblioteca */ }
+  const sock = makeWASocket({ auth: state, version, logger: pino({ level: "warn" }, pino.destination({ dest: path.join(DADOS, "..", "whatsapp_qr_baileys.log"), sync: false, mkdir: true })), browser: Browsers.macOS("Desktop"),
+    syncFullHistory: false, markOnlineOnConnect: false });
+  s.sock = sock;
+  sock.ev.on("creds.update", saveCreds);
+  sock.ev.on("connection.update", async (u) => {
+    log("conexão:", JSON.stringify({ connection: u.connection, qr: !!u.qr, receivedPendingNotifications: u.receivedPendingNotifications, erro: u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.message }));
+    if (u.qr) { s.estado = "aguardando_qr"; await avisar({ tipo: "estado", canal_id: canalId, estado: "aguardando_qr", qr: u.qr }); }
+    if (u.connection === "open") {
+      s.estado = "conectado"; s.tentativas = 0;
+      s.numero = String((sock.user && sock.user.id) || "").split(":")[0].split("@")[0];
+      await avisar({ tipo: "estado", canal_id: canalId, estado: "conectado", numero: s.numero });
+    }
+    if (u.connection === "close") {
+      const codigo = u.lastDisconnect && u.lastDisconnect.error && u.lastDisconnect.error.output && u.lastDisconnect.error.output.statusCode;
+      if (s.parando) return;
+      if (codigo === DisconnectReason.loggedOut) {
+        s.estado = "desconectado"; sessoes.delete(canalId);
+        fs.rmSync(pasta, { recursive: true, force: true });
+        await avisar({ tipo: "estado", canal_id: canalId, estado: "desconectado" });
+      } else {
+        s.estado = "reconectando"; s.tentativas += 1;
+        await avisar({ tipo: "estado", canal_id: canalId, estado: "reconectando" });
+        setTimeout(() => { s.sock = null; sessoes.delete(canalId); iniciar(canalId).catch((e) => log("reconexão falhou", e.message)); },
+          Math.min(30000, 2000 * s.tentativas));
+      }
+    }
+  });
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    log("mensagens recebidas do WhatsApp:", messages.length, "tipo:", type);
+    if (type !== "notify" && type !== "append") return;
+    for (const msg of messages) {
+      if (!msg.message) { log("mensagem sem conteúdo legível (id", msg.key.id, ")"); continue; }
+      if (msg.key.fromMe) continue;
+      // "append" vem do histórico/sincronização: só entra o que é recente (até 15 min), para não despejar conversas antigas
+      const quando = Number(msg.messageTimestamp && msg.messageTimestamp.toNumber ? msg.messageTimestamp.toNumber() : msg.messageTimestamp) || 0;
+      if (type === "append" && quando && (Date.now() / 1000 - quando) > 900) { log("ignorada (antiga)", msg.key.id); continue; }
+      const jid = String(msg.key.remoteJid || "");
+      if (jid.endsWith("@g.us") || jid === "status@broadcast" || jid.endsWith("@newsletter")) continue; // grupos e status não entram no atendimento
+      const de = telefoneDe(msg.key);
+      log("mensagem de", de, "id", msg.key.id);
+      if (!de) continue;
+      await avisar({ tipo: "mensagem", canal_id: canalId, id: msg.key.id, de, nome: msg.pushName || null, texto: textoDe(msg) });
+    }
+  });
+  sock.ev.on("messages.update", async (lista) => {
+    for (const u of lista) {
+      const st = u.update && u.update.status;
+      const nome = { 2: "sent", 3: "delivered", 4: "read", 5: "read" }[st];
+      if (nome && u.key && u.key.fromMe) await avisar({ tipo: "status", canal_id: canalId, id: u.key.id, status: nome });
+    }
+  });
+  return s;
+}
+
+async function enviar(canalId, para, texto) {
+  const numero = String(para || "").replace(/\D/g, "");
+  if (!numero || !texto) throw new Error("destino ou texto vazio");
+  if (SIMULADO) { const id = "sim" + Date.now() + enviadasSimuladas.length; enviadasSimuladas.push({ canal_id: canalId, para: numero, texto, id }); return id; }
+  const s = sessoes.get(canalId);
+  if (!s || !s.sock || s.estado !== "conectado") throw new Error("WhatsApp não está conectado. Leia o QR Code de novo.");
+  const r = await s.sock.sendMessage(numero + "@s.whatsapp.net", { text: String(texto).slice(0, 4096) });
+  return r && r.key && r.key.id;
+}
+
+async function desconectar(canalId) {
+  const s = sessoes.get(canalId);
+  if (s) { s.parando = true; try { if (s.sock) await s.sock.logout(); } catch (e) { /* já caiu */ } sessoes.delete(canalId); }
+  fs.rmSync(path.join(DADOS, canalId), { recursive: true, force: true });
+  await avisar({ tipo: "estado", canal_id: canalId, estado: "desconectado" });
+}
+
+/* ------------------------------------------------ servidor local */
+function lerCorpo(req) {
+  return new Promise((ok, erro) => {
+    let b = ""; req.on("data", (c) => { b += c; if (b.length > 100000) { req.destroy(); erro(new Error("grande")); } });
+    req.on("end", () => { try { ok(b ? JSON.parse(b) : {}); } catch (e) { erro(e); } });
+  });
+}
+const servidor = http.createServer(async (req, res) => {
+  const responder = (cod, obj) => { res.writeHead(cod, { "content-type": "application/json" }); res.end(JSON.stringify(obj)); };
+  if (req.headers["x-segredo"] !== SEGREDO) return responder(403, { erro: "negado" });
+  const url = new URL(req.url, "http://127.0.0.1");
+  try {
+    const c = req.method === "POST" ? await lerCorpo(req) : {};
+    const canal = c.canal_id || url.searchParams.get("canal_id");
+    if (url.pathname === "/config" && req.method === "POST") { if (/^http:\/\/127\.0\.0\.1:\d+$/.test(String(c.py_url || ""))) { PY_URL = c.py_url; log("endereço do servidor:", PY_URL); } return responder(200, { ok: true, py_url: PY_URL }); }
+    if (url.pathname === "/encerrar" && req.method === "POST") { responder(200, { ok: true }); log("encerrando a pedido do servidor"); setTimeout(() => process.exit(0), 300); return; }
+    if (url.pathname === "/saude") return responder(200, { ok: true, versao: VERSAO, simulado: SIMULADO, sessoes: sessoes.size });
+    if (url.pathname === "/sessao" && req.method === "POST") { await iniciar(canal); return responder(200, { ok: true }); }
+    if (url.pathname === "/estado") { const s = sessoes.get(canal); return responder(200, { estado: s ? s.estado : "sem_sessao", numero: s ? s.numero : null }); }
+    if (url.pathname === "/enviar" && req.method === "POST") { return responder(200, { ok: true, id: await enviar(canal, c.para, c.texto) }); }
+    if (url.pathname === "/desconectar" && req.method === "POST") { await desconectar(canal); return responder(200, { ok: true }); }
+    if (SIMULADO && url.pathname === "/simular/escanear") { const s = sessoes.get(canal); s.estado = "conectado"; s.numero = "5579999990000"; await avisar({ tipo: "estado", canal_id: canal, estado: "conectado", numero: s.numero }); return responder(200, { ok: true }); }
+    if (SIMULADO && url.pathname === "/simular/mensagem") { await avisar({ tipo: "mensagem", canal_id: canal, id: "in" + Date.now(), de: c.de, nome: c.nome || null, texto: c.texto }); return responder(200, { ok: true }); }
+    if (SIMULADO && url.pathname === "/simular/enviadas") return responder(200, { itens: enviadasSimuladas });
+    return responder(404, { erro: "não existe" });
+  } catch (e) { return responder(500, { erro: String(e && e.message || e) }); }
+});
+servidor.listen(PORTA, "127.0.0.1", () => {
+  log(`pronta em 127.0.0.1:${PORTA}${SIMULADO ? " (SIMULADO)" : ""}`);
+  // sessões que já estavam conectadas voltam sozinhas
+  try { for (const id of fs.readdirSync(DADOS)) if (idValido(id) && fs.statSync(path.join(DADOS, id)).isDirectory()) iniciar(id).catch((e) => log("não retomou", id, e.message)); } catch (e) { /* pasta vazia */ }
+});
+process.on("uncaughtException", (e) => log("erro não tratado:", e && e.message));
+process.on("unhandledRejection", (e) => log("promessa rejeitada:", e && e.message));

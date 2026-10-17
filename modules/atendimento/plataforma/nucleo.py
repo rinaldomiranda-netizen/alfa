@@ -243,17 +243,25 @@ class NucleoMixin:
             raise NaoEncontrado("Usuário não encontrado.")
         return usuario
 
-    @staticmethod
-    def _publico_usuario(u: dict) -> dict:
+    def _publico_usuario(self, u: dict) -> dict:
+        cargo = None
+        if u.get("cargo_id"):
+            try:
+                cargo = self.banco.um("SELECT nome, nivel FROM igreja_cargos WHERE id=?", (u["cargo_id"],))
+            except Exception:  # noqa: BLE001
+                cargo = None
         return {
             k: u.get(k) for k in (
                 "id", "empresa_id", "nome", "email", "perfil", "fila_id", "contato_id", "presenca",
                 "ativo", "trocar_senha", "ultimo_acesso", "criado_em",
             )
-        } | {"dois_fatores": bool(u.get("totp_ativo")), "perfil_nome": permissoes.NOMES_PERFIS.get(u.get("perfil"), u.get("perfil"))}
+        } | {"dois_fatores": bool(u.get("totp_ativo")), "perfil_nome": permissoes.NOMES_PERFIS.get(u.get("perfil"), u.get("perfil")),
+             "cargo_id": u.get("cargo_id") if cargo else None, "cargo_nome": cargo["nome"] if cargo else None,
+             "cargo_nivel": cargo["nivel"] if cargo else None}
 
     def criar_usuario(self, ator: Ator | None, nome: str, email: str, perfil: str, senha: str | None = None,
-                      fila_id: str | None = None, contato_id: str | None = None, empresa_id: str | None = None) -> tuple[dict, str | None]:
+                      fila_id: str | None = None, contato_id: str | None = None, empresa_id: str | None = None,
+                      cargo_id: str | None = None) -> tuple[dict, str | None]:
         if perfil not in permissoes.PERFIS:
             raise ErroNegocio("Perfil desconhecido.")
         if ator is not None:
@@ -276,6 +284,8 @@ class NucleoMixin:
         if perfil == "cliente":
             if not contato_id or not self.banco.um("SELECT 1 AS x FROM contatos WHERE id=? AND empresa_id=?", (contato_id, empresa_id)):
                 raise ErroNegocio("Usuário cliente precisa estar ligado a um nome cadastrado.")
+        if cargo_id and not self.banco.um("SELECT 1 AS x FROM igreja_cargos WHERE id=? AND empresa_id=?", (cargo_id, empresa_id)):
+            raise ErroNegocio("Cargo inválido.")
         temporaria = None
         if senha:
             seguranca.validar_senha_nova(senha)
@@ -285,9 +295,9 @@ class NucleoMixin:
         usuario_id = novo_id()
         self.banco.executar(
             """INSERT INTO usuarios(id, empresa_id, nome, email, senha_hash, senha_salt, perfil, fila_id, contato_id,
-               trocar_senha, criado_em) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+               trocar_senha, criado_em, cargo_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (usuario_id, empresa_id, nome, email, seguranca.hash_senha(senha, salt), salt, perfil, fila_id, contato_id,
-             1 if temporaria else 0, agora()),
+             1 if temporaria else 0, agora(), cargo_id or None),
         )
         self.auditar(ator, "usuario.criar", usuario_id, {"email": email, "perfil": perfil}, empresa_id=empresa_id)
         return self._publico_usuario(self._usuario(usuario_id)), temporaria
@@ -317,11 +327,15 @@ class NucleoMixin:
         if fila_id and not self.banco.um("SELECT 1 AS x FROM filas WHERE id=? AND empresa_id=?", (fila_id, ator.empresa)):
             raise ErroNegocio("Fila inválida.")
         nome = _texto(dados.get("nome", usuario["nome"]), "nome", maximo=120)
+        cargo_id = dados.get("cargo_id", usuario.get("cargo_id")) or None
+        if cargo_id and not self.banco.um("SELECT 1 AS x FROM igreja_cargos WHERE id=? AND empresa_id=?", (cargo_id, ator.empresa)):
+            raise ErroNegocio("Cargo inválido.")
         with self.banco.transacao() as c:
-            c.execute("UPDATE usuarios SET nome=?, perfil=?, ativo=?, fila_id=? WHERE id=?", (nome, perfil, ativo, fila_id, usuario_id))
+            c.execute("UPDATE usuarios SET nome=?, perfil=?, ativo=?, fila_id=?, cargo_id=? WHERE id=?",
+                      (nome, perfil, ativo, fila_id, cargo_id, usuario_id))
             if not ativo:
                 c.execute("DELETE FROM sessoes WHERE usuario_id=?", (usuario_id,))
-        self.auditar(ator, "usuario.editar", usuario_id, {"perfil": perfil, "ativo": ativo})
+        self.auditar(ator, "usuario.editar", usuario_id, {"perfil": perfil, "ativo": ativo, "cargo": cargo_id})
         return self._publico_usuario(self._usuario(usuario_id))
 
     def redefinir_senha(self, ator: Ator, usuario_id: str) -> str:
@@ -457,6 +471,14 @@ class NucleoMixin:
             do_perfil, acoes_off = self.restricoes_do_perfil(empresa, usuario["perfil"])  # configuração do RMD Desenvolvedor
             desligados |= do_perfil
         extras = {}
+        if usuario["perfil"] != "owner" and usuario.get("cargo_id") and hasattr(self, "restricoes_do_cargo"):
+            try:  # cargo da igreja (presbítero, diácono…): só tira permissões, nunca dá
+                r_cargo, a_cargo = self.restricoes_do_cargo(empresa, usuario["cargo_id"])
+                desligados |= r_cargo
+                acoes_off = set(acoes_off) | a_cargo
+                extras["cargo"] = self.info_cargo(usuario["cargo_id"])
+            except Exception:  # noqa: BLE001 - banco antigo sem a tabela de cargos
+                pass
         if desligados:
             extras["recursos_off"] = desligados
         if acoes_off:

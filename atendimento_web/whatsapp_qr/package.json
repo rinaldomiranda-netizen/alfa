@@ -1,0 +1,11 @@
+{
+  "name": "rmd-whatsapp-qr",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ponte de conexão do WhatsApp por QR Code (WhatsApp Web) para o RMD Atendimento",
+  "main": "ponte.js",
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "pino": "^9.6.0"
+  }
+}

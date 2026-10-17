@@ -16,7 +16,7 @@
 
 const ETAPAS_IGREJA = [
   ["novo", "Primeira visita", "👋"], ["contatado", "Contatado", "📞"], ["retornou", "Voltou ao culto", "⛪"],
-  ["grupo", "Em célula / grupo", "🤝"], ["integrado", "Integrado", "✅"],
+  ["integrado", "Integrado", "✅"],
 ];
 const COMO_CONHECEU = [["", "—"], ["convite", "Convite de alguém"], ["redes_sociais", "Redes sociais"], ["passando", "Estava passando"],
   ["familia", "Família"], ["evento", "Evento da igreja"], ["outro", "Outro"]];
@@ -476,6 +476,36 @@ registrarTela("system", {
         h("div", { class: "ig-linha" }, h("button", { class: "btn pequeno primario", type: "button", text: "Salvar funções", on: { click: salvarRecursos } }))));
     });
     el.append(lista);
+
+    /* Convite de testador: acesso só à igreja de demonstração (dados fictícios) */
+    const convites = await api("/api/sistema/convites-teste");
+    const convidar = () => {
+      const form = h("div", { class: "formulario" }, campo("Nome de quem vai testar", entrada("nome", "", { placeholder: "Ex.: Pastor João" }), "O acesso entra só na igreja de demonstração, com dados fictícios."));
+      modal({ titulo: "Convidar testador", conteudo: form, acoes: [{ texto: "Cancelar" }, { texto: "Criar convite", classe: "primario", fecha: false, acao: async (fechar) => {
+        const r = await api("/api/sistema/convites-teste", { dados: lerFormulario(form) }); fechar();
+        const texto = `Olá, ${r.nome}! Para testar o RMD Atendimento Church (igreja de demonstração, dados fictícios):\n` +
+          `Endereço: ${location.origin}/\nE-mail: ${r.email}\nSenha inicial: 1234`;
+        modal({ titulo: "Convite pronto", conteudo: h("div", null, h("p", { class: "suave", text: "Copie e envie para a pessoa (WhatsApp, e-mail…). A senha vai dentro do texto copiado." }),
+          h("div", { class: "item" }, h("div", null, h("b", { text: r.nome }), h("div", { class: "suave", text: r.email + " • " + location.origin + "/" })))),
+          acoes: [{ texto: "Fechar" }, { texto: "Copiar convite", classe: "primario", fecha: false, acao: async () => {
+            try { await navigator.clipboard.writeText(texto); toast("Convite copiado."); } catch (_) { window.prompt("Copie o convite:", texto); }
+          } }] });
+        mostrarTela();
+      } }] });
+    };
+    el.append(h("div", { class: "cartao", style: { marginTop: "15px" } },
+      h("div", { class: "linha-titulo" }, h("h2", { text: "Testadores convidados" }),
+        h("button", { class: "btn pequeno primario", type: "button", text: "+ Convidar testador", on: { click: convidar } })),
+      h("p", { class: "suave", text: "Pessoas que podem experimentar o sistema na igreja de demonstração (Sede, setores, igrejas, visitantes, orações…). Elas não enxergam nenhuma igreja real." }),
+      convites.length ? tabela([
+        { titulo: "Nome", valor: (x) => x.nome }, { titulo: "E-mail", valor: (x) => x.email },
+        { titulo: "Último acesso", valor: (x) => x.ultimo_acesso ? relativo(x.ultimo_acesso) : "ainda não entrou" },
+        { titulo: "Situação", valor: (x) => selo(x.ativo ? "ativo" : "inativo", x.ativo ? "Liberado" : "Encerrado") },
+        { titulo: "", valor: (x) => x.ativo ? h("button", { class: "btn pequeno perigo", type: "button", text: "Encerrar", on: { click: async (ev) => {
+          ev.stopPropagation(); if (!(await confirmar("Encerrar o acesso de " + x.nome + "?", "Encerrar", "perigo"))) return;
+          await api("/api/sistema/convites-teste/" + x.id + "/encerrar", { dados: {} }); toast("Acesso encerrado."); mostrarTela();
+        } } }) : "" },
+      ], convites) : h("div", { class: "vazio", text: "Nenhum testador convidado ainda." })));
 
     const vistos = h("button", { class: "btn pequeno", type: "button", text: "Marcar como vistos", on: { click: async () => { await api("/api/sistema/erros/vistos", { dados: {} }); mostrarTela(); } } });
     el.append(h("div", { class: "cartao", style: { marginTop: "15px" } },

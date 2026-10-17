@@ -1,0 +1,149 @@
+"""Conexão do WhatsApp por QR Code (WhatsApp Web) — lado Python.
+
+A ponte é um programa Node separado (atendimento_web/whatsapp_qr/ponte.js) que só escuta em
+127.0.0.1. Este módulo: guarda o segredo compartilhado, sobe a ponte quando o servidor sobe e
+fala com ela por HTTP local.
+
+ATENÇÃO: usa o protocolo do WhatsApp Web, que NÃO é a conexão oficial da Meta. O número pode ser
+bloqueado. Para desligar tudo: RMD_WHATSAPP_QR=0.
+"""
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+VERSAO_PONTE = 4  # sobe junto com o ponte.js: uma ponte mais antiga que isso é trocada ao abrir o sistema
+PORTA_PONTE = int(os.getenv("RMD_PONTE_PORTA", "8787"))
+PASTA_PONTE = Path(__file__).resolve().parent.parent.parent.parent / "atendimento_web" / "whatsapp_qr"
+_processo: subprocess.Popen | None = None
+
+
+def habilitada() -> bool:
+    return os.getenv("RMD_WHATSAPP_QR", "1").strip() != "0"
+
+
+def _node() -> str | None:
+    return os.getenv("RMD_NODE") or shutil.which("node") or shutil.which("node.exe")
+
+
+def segredo(pasta_dados: Path) -> str:
+    """Segredo que só o servidor e a ponte conhecem (fica na pasta de dados; nunca vai para a tela)."""
+    arquivo = Path(pasta_dados) / "whatsapp_qr_segredo.txt"
+    if os.getenv("RMD_PONTE_SEGREDO"):
+        return os.environ["RMD_PONTE_SEGREDO"]
+    if arquivo.exists():
+        return arquivo.read_text(encoding="utf-8").strip()
+    arquivo.parent.mkdir(parents=True, exist_ok=True)
+    valor = secrets.token_hex(24)
+    arquivo.write_text(valor, encoding="utf-8")
+    return valor
+
+
+def chamar(pasta_dados: Path, metodo: str, caminho: str, corpo: dict | None = None, timeout: float = 15) -> dict:
+    """Pede algo à ponte. Levanta OSError se ela não estiver no ar."""
+    dados = json.dumps(corpo).encode("utf-8") if corpo is not None else None
+    pedido = urllib.request.Request(f"http://127.0.0.1:{PORTA_PONTE}{caminho}", data=dados, method=metodo,
+                                    headers={"x-segredo": segredo(pasta_dados), "content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(pedido, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as erro:
+        try:
+            detalhe = json.loads(erro.read().decode("utf-8")).get("erro")
+        except Exception:  # noqa: BLE001
+            detalhe = None
+        raise OSError(detalhe or f"A ponte do WhatsApp respondeu {erro.code}.") from None
+    except urllib.error.URLError as erro:
+        raise OSError("A ponte do WhatsApp (QR Code) não está ligada neste servidor.") from erro
+
+
+def no_ar(pasta_dados: Path) -> bool:
+    try:
+        return bool(chamar(pasta_dados, "GET", "/saude", timeout=2).get("ok"))
+    except OSError:
+        return False
+
+
+def disponivel(pasta_dados: Path) -> bool:
+    return habilitada() and no_ar(pasta_dados)
+
+
+def _encerrar_processo_da_porta() -> None:
+    """Windows: acha o programa (node) que está escutando a porta da ponte e o fecha."""
+    if not sys.platform.startswith("win"):
+        return
+    comando = (f"Get-NetTCPConnection -LocalPort {PORTA_PONTE} -State Listen -ErrorAction SilentlyContinue | "
+               "ForEach-Object { $p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $_.OwningProcess); "
+               "if ($p -and $p.CommandLine -like '*ponte.js*') { Stop-Process -Id $_.OwningProcess -Force } }")
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", comando], timeout=20,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def iniciar_ponte(pasta_dados: Path, porta_servidor: int) -> bool:
+    """Sobe a ponte (se o Node e os arquivos existirem). Nunca impede o sistema de abrir."""
+    global _processo
+    if not habilitada():
+        return False
+    try:  # ponte velha sobrando em segundo plano (de uma versão anterior): pede para ela sair e sobe a nova
+        saude = chamar(pasta_dados, "GET", "/saude", timeout=2)
+        if saude.get("ok") and int(saude.get("versao") or 0) < VERSAO_PONTE:
+            try:
+                chamar(pasta_dados, "POST", "/encerrar", {}, timeout=3)
+            except OSError:
+                pass
+            for _ in range(20):
+                time.sleep(0.25)
+                if not no_ar(pasta_dados):
+                    break
+            if no_ar(pasta_dados):  # ponte tão antiga que nem sabe encerrar: fecha o processo que usa a porta
+                _encerrar_processo_da_porta()
+                for _ in range(20):
+                    time.sleep(0.25)
+                    if not no_ar(pasta_dados):
+                        break
+    except OSError:
+        pass
+    if (_processo and _processo.poll() is None) or no_ar(pasta_dados):
+        # A ponte já estava no ar (ex.: sobrou de uma abertura anterior): aponta ela para ESTE servidor,
+        # senão os avisos de mensagens recebidas iriam para a porta antiga e se perderiam.
+        try:
+            chamar(pasta_dados, "POST", "/config", {"py_url": f"http://127.0.0.1:{porta_servidor}"}, timeout=3)
+        except OSError:
+            pass
+        return no_ar(pasta_dados)
+    node, ponte = _node(), PASTA_PONTE / "ponte.js"
+    if not node or not ponte.exists() or not (PASTA_PONTE / "node_modules").exists() and os.getenv("PONTE_SIMULADO") != "1":
+        return False
+    ambiente = {**os.environ, "PONTE_PORTA": str(PORTA_PONTE), "PONTE_SEGREDO": segredo(pasta_dados),
+                "PY_URL": f"http://127.0.0.1:{porta_servidor}", "PONTE_DADOS": str(Path(pasta_dados) / "whatsapp_qr")}
+    flags, inicio = 0, None
+    if sys.platform.startswith("win"):
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        inicio = subprocess.STARTUPINFO()
+        inicio.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        inicio.wShowWindow = 0
+    try:  # o que a ponte conta (conexão, mensagens, erros) fica num arquivo, para diagnóstico
+        saida = open(Path(pasta_dados) / "whatsapp_qr_ponte_saida.log", "ab")
+    except OSError:
+        saida = subprocess.DEVNULL
+    _processo = subprocess.Popen([node, str(ponte)], cwd=str(PASTA_PONTE), env=ambiente, creationflags=flags, startupinfo=inicio,
+                                 stdout=saida, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    return True
+
+
+def parar_ponte() -> None:
+    global _processo
+    if _processo and _processo.poll() is None:
+        _processo.terminate()
+    _processo = None

@@ -35,7 +35,50 @@ registrarTela("whatsapp", {
         if (r.ok) toast("A Meta aceitou a mensagem. ID: " + r.id_meta); else throw new Error("A Meta recusou: " + r.erro);
       } }] });
     };
-    if (pode("whatsapp", "configurar")) acoes.append(h("button", { class: "btn primario", type: "button", text: "+ Conectar número", on: { click: () => editar(null) } }));
+    // ---- conexão por QR Code (WhatsApp Web) — não é a conexão oficial da Meta
+    const ROTULO_QR = { iniciando: "Iniciando…", aguardando_qr: "Aguardando a leitura do QR", conectado: "Conectado", reconectando: "Reconectando…", desconectado: "Desconectado" };
+    const mostrarQr = async (canal) => {
+      const lugar = h("div", { style: { textAlign: "center", minHeight: "260px", display: "grid", placeItems: "center" } }, h("div", { class: "suave", text: "Preparando o QR Code…" }));
+      const estado = h("div", { class: "suave", style: { textAlign: "center", marginTop: "8px" }, text: "" });
+      let ultimo = null, parar = false;
+      const atualizar = async () => {
+        if (parar) return;
+        let r; try { r = await api(`/api/whatsapp/canais/${canal.id}/qr`); } catch (e) { return; }
+        estado.textContent = ROTULO_QR[r.estado] || r.estado;
+        if (r.estado === "conectado") {
+          parar = true; limpar(lugar).append(h("div", null, h("div", { style: { fontSize: "46px" }, text: "✓" }), h("b", { text: "WhatsApp conectado!" }), h("div", { class: "suave", text: r.numero ? "Número +" + r.numero : "" })));
+          toast("WhatsApp conectado."); return;
+        }
+        if (r.qr && r.qr !== ultimo) {
+          ultimo = r.qr;
+          const qrcode = await carregarQr(); const qr = qrcode(0, "L"); qr.addData(r.qr); qr.make();
+          limpar(lugar).append(h("img", { src: qr.createDataURL(6, 8), alt: "QR Code do WhatsApp", style: { background: "#fff", borderRadius: "10px", maxWidth: "100%" } }));
+        }
+      };
+      const tempo = setInterval(atualizar, 2500); atualizar();
+      modal({ titulo: "Conectar o WhatsApp pelo QR Code", larga: false, aoFechar: () => { parar = true; clearInterval(tempo); mostrarTela(); },
+        conteudo: h("div", null,
+          h("ol", { class: "suave", style: { paddingLeft: "20px", lineHeight: "1.6" } },
+            h("li", { text: "No celular, abra o WhatsApp." }), h("li", { text: "Toque em Configurações (ou nos 3 pontinhos) → Aparelhos conectados." }),
+            h("li", { text: "Toque em Conectar um aparelho e aponte a câmera para o QR abaixo." })),
+          lugar, estado,
+          h("p", { class: "suave", style: { marginTop: "10px" }, text: "O QR se renova sozinho a cada poucos segundos. Se demorar, feche e abra de novo." })),
+        acoes: [{ texto: "Fechar" }] });
+    };
+    const conectarQr = async () => {
+      const ok = await confirmar("Esta conexão usa o WhatsApp Web e não é a oficial da Meta. A Meta pode bloquear o número. Use um número de teste ou secundário, não o oficial da igreja. Continuar?", "Continuar", "primario");
+      if (!ok) return;
+      const canal = await api("/api/whatsapp/qr", { dados: {} });
+      mostrarQr(canal);
+    };
+    const desconectarQr = async (c) => {
+      if (!(await confirmar("Desconectar este WhatsApp? Para voltar, será preciso ler o QR de novo.", "Desconectar", "perigo"))) return;
+      await api(`/api/whatsapp/canais/${c.id}/desconectar`, { dados: {} }); toast("Desconectado."); mostrarTela();
+    };
+    if (pode("whatsapp", "configurar")) {
+      acoes.append(h("button", { class: "btn primario", type: "button", text: "Conectar por QR Code", disabled: !d.qr_disponivel, title: d.qr_disponivel ? "" : "Não disponível neste servidor", on: { click: () => conectarQr().catch(falha) } }));
+      acoes.append(h("button", { class: "btn", type: "button", text: "+ Conectar número (oficial Meta)", on: { click: () => editar(null) } }));
+    }
     const hoje = d.hoje;
     el.append(h("div", { class: "grade estatisticas" },
       cartaoNumero("Recebidas hoje", hoje.recebidas || 0), cartaoNumero("Enviadas hoje", hoje.enviadas || 0),
@@ -43,14 +86,19 @@ registrarTela("whatsapp", {
       cartaoNumero("Falhas", hoje.falhas || 0, hoje.falhas ? "veja em Alertas" : null, hoje.falhas ? "ruim" : "")));
     el.append(h("div", { class: "grade colunas" },
       h("div", { class: "cartao" }, h("h2", { text: "Números conectados" }),
-        d.canais.length ? d.canais.map((c) => h("div", { class: "item" },
+        d.canais.length ? d.canais.map((c) => c.modo === "qr" ? h("div", { class: "item" },
+          h("div", null, h("b", { text: `${c.nome} ${c.numero_exibicao ? "• " + c.numero_exibicao : ""}` }),
+            h("div", { class: "suave", text: `Conexão por QR Code (WhatsApp Web) • ${ROTULO_QR[c.qr_estado] || "—"} • ${c.ultimo_evento_em ? "último evento " + relativo(c.ultimo_evento_em) : "nenhum evento ainda"}` })),
+          h("div", { class: "acoes" }, selo(c.qr_estado === "conectado" ? "ativo" : "inativo", ROTULO_QR[c.qr_estado] || "—"),
+            c.qr_estado !== "conectado" ? h("button", { class: "btn pequeno primario", type: "button", text: "Mostrar QR", on: { click: () => conectarQr().catch(falha) } }) : null,
+            h("button", { class: "btn pequeno perigo", type: "button", text: "Desconectar", on: { click: () => desconectarQr(c).catch(falha) } }))) : h("div", { class: "item" },
           h("div", null, h("b", { text: `${c.nome} ${c.numero_exibicao ? "• " + c.numero_exibicao : ""}` }),
             h("div", { class: "suave", text: `Phone number ID ${c.phone_number_id} • token ${c.access_token || "—"} • ${c.ultimo_evento_em ? "último evento " + relativo(c.ultimo_evento_em) : "nenhum evento recebido ainda"}` })),
           h("div", { class: "acoes" }, selo(c.ativo ? "ativo" : "inativo"),
             h("button", { class: "btn pequeno", type: "button", text: "Testar", on: { click: () => testar(c) } }),
             h("button", { class: "btn pequeno", type: "button", text: "Editar", on: { click: () => editar(c) } })))) :
           h("div", { class: "vazio", text: "Nenhum número conectado. Clique em “Conectar número” e use os dados da sua conta Meta." }),
-        d.canais.length ? h("div", null, h("h3", { text: "Configure o webhook na Meta" }),
+        d.canais.some((c) => c.modo !== "qr") ? h("div", null, h("h3", { text: "Configure o webhook na Meta" }),
           campo("URL de callback", copiavel(enderecoWebhook), "A Meta precisa alcançar este endereço pela internet com HTTPS (veja ao lado)."),
           d.canais.map((c) => campo(`Token de verificação (${c.nome})`, copiavel(c.verify_token))),
           h("p", { class: "suave", text: "Na Meta: WhatsApp → Configuração → Webhook → Editar. Cole a URL e o token, clique em Verificar e salvar, e assine o campo “messages”." })) : null),

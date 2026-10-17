@@ -141,3 +141,56 @@ class SistemaMixin:
         if not empresa:
             raise NaoEncontrado("Igreja não encontrada.")
         return empresa
+
+
+class ConvitesTesteMixin:
+    """Convite de testador: acesso à igreja de DEMONSTRAÇÃO (dados fictícios) para alguém experimentar o sistema.
+
+    Nunca dá acesso a igrejas reais. O RMD Desenvolvedor cria, vê quem foi convidado e encerra o acesso.
+    """
+    PREFIXO_CONVITE = "teste."
+
+    def _convites_teste(self, empresa_id: str) -> list[dict]:
+        return self.banco.todos(
+            "SELECT id, nome, email, ativo, criado_em, ultimo_acesso FROM usuarios WHERE empresa_id=? AND email LIKE ? ORDER BY criado_em DESC",
+            (empresa_id, self.PREFIXO_CONVITE + "%@demonstracao.local"))
+
+    def listar_convites_teste(self, ator: Ator) -> list[dict]:
+        ator.exigir("empresas", "editar")
+        empresa = self.empresa_por_slug("demonstracao")
+        if not empresa:
+            return []
+        return [{**c, "ativo": bool(c["ativo"])} for c in self._convites_teste(empresa["id"])]
+
+    def criar_convite_teste(self, ator: Ator, nome: str) -> dict:
+        ator.exigir("empresas", "editar")
+        import re
+        import secrets
+        import unicodedata
+
+        from . import demo
+        nome = (nome or "").strip()
+        if len(nome) < 2:
+            raise ErroNegocio("Informe o nome de quem vai testar.")
+        dados = demo.garantir_demonstracao(self)
+        empresa_id = dados["empresa_id"]
+        base = unicodedata.normalize("NFKD", nome.lower()).encode("ascii", "ignore").decode()
+        base = re.sub(r"[^a-z0-9]+", ".", base).strip(".")[:20] or "pessoa"
+        email = f"{self.PREFIXO_CONVITE}{base}.{secrets.token_hex(2)}@demonstracao.local"
+        usuario, _ = self.criar_usuario(None, nome, email, "admin", empresa_id=empresa_id)
+        salt = seguranca.gerar_salt()
+        self.banco.executar("UPDATE usuarios SET senha_hash=?, senha_salt=?, trocar_senha=0 WHERE id=?",
+                            (seguranca.hash_senha("1234", salt), salt, usuario["id"]))
+        self.auditar(ator, "convite_teste.criar", usuario["id"], {"nome": nome}, empresa_id=empresa_id)
+        return {"id": usuario["id"], "nome": nome, "email": email}
+
+    def encerrar_convite_teste(self, ator: Ator, usuario_id: str) -> dict:
+        ator.exigir("empresas", "editar")
+        empresa = self.empresa_por_slug("demonstracao")
+        linha = self.banco.um("SELECT id FROM usuarios WHERE id=? AND empresa_id=? AND email LIKE ?",
+                              (usuario_id, (empresa or {}).get("id", ""), self.PREFIXO_CONVITE + "%@demonstracao.local"))
+        if not linha:
+            raise NaoEncontrado("Convite não encontrado.")
+        self.banco.executar("UPDATE usuarios SET ativo=0 WHERE id=?", (usuario_id,))
+        self.auditar(ator, "convite_teste.encerrar", usuario_id, empresa_id=empresa["id"])
+        return {"ok": True}

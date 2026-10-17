@@ -261,7 +261,8 @@ class Handler(BaseHTTPRequestHandler):
         except SenhaFraca as erro:  # senha nova fora da regra: mostra o motivo, não "erro interno"
             self._json({"erro": str(erro)}, 400)
         except ErroNegocio as erro:
-            self._json({"erro": str(erro)}, getattr(erro, "codigo_http", 400))
+            extra = {"duplicidade": True, "candidatos": erro.candidatos, "pode_criar": erro.pode_criar} if hasattr(erro, "candidatos") else {}
+            self._json({"erro": str(erro), **extra}, getattr(erro, "codigo_http", 400))
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as erro:  # noqa: BLE001 - nunca mostra detalhes internos para o navegador
@@ -316,7 +317,8 @@ class Handler(BaseHTTPRequestHandler):
         return {
             "usuario": {"id": a.usuario_id, "nome": a.nome, "email": a.email, "perfil": a.perfil,
                         "perfil_nome": nomes["perfis"].get(a.perfil) or permissoes.NOMES_PERFIS[a.perfil],
-                        "fila_id": a.fila_id, "contato_id": a.contato_id, "trocar_senha": a.trocar_senha},
+                        "fila_id": a.fila_id, "contato_id": a.contato_id, "trocar_senha": a.trocar_senha,
+                        "cargo_nome": (a.extras.get("cargo") or {}).get("nome"), "cargo_nivel": (a.extras.get("cargo") or {}).get("nivel")},
             "empresa": config,
             "telas": self._telas(a),
             "personalizacao": {"telas": nomes["telas"], "perfil_proprio": bool(nomes["perfis"].get(a.perfil))},
@@ -334,6 +336,23 @@ class Handler(BaseHTTPRequestHandler):
     def r_saude(self):
         plataforma().banco.um("SELECT 1 AS ok")
         return {"ok": True, "servico": NOME_EDICAO, "versao": VERSAO, "edicao": EDICAO}
+
+    # Janela do computador aberta/fechada: só vale quando o pedido vem DESTE computador (127.0.0.1).
+    # Serve para o servidor local se encerrar sozinho quando a janela do sistema é fechada.
+    def _do_proprio_computador(self) -> bool:
+        return bool(self.client_address) and self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+    @rota("GET", "/api/vivo", "publico")
+    def r_vivo(self):
+        if self._do_proprio_computador():
+            _JANELA["ultimo"] = time.monotonic()
+        return {"ok": True}
+
+    @rota("GET", "/api/saindo", "publico")
+    def r_saindo(self):
+        if self._do_proprio_computador():
+            _JANELA["saiu"] = time.monotonic()
+        return {"ok": True}
 
     @rota("GET", "/api/sessao")
     def r_sessao(self):
@@ -426,6 +445,11 @@ class Handler(BaseHTTPRequestHandler):
     def r_assumir(self, cid):
         return plataforma().assumir(self.ator, cid)
 
+    @rota("POST", "/api/conversas/{cid}/liberacao")
+    def r_liberacao(self, cid):
+        dados = self._corpo()
+        return plataforma().decidir_liberacao(self.ator, cid, bool(dados.get("liberar")), dados.get("nota"))
+
     @rota("POST", "/api/conversas/{cid}/transferir")
     def r_transferir(self, cid):
         dados = self._corpo()
@@ -443,6 +467,15 @@ class Handler(BaseHTTPRequestHandler):
     @rota("POST", "/api/contatos")
     def r_contato_criar(self):
         return plataforma().criar_contato(self.ator, self._corpo())
+
+    @rota("GET", "/api/contatos/duplicados")
+    def r_contatos_duplicados(self):
+        return plataforma().listar_duplicados(self.ator)
+
+    @rota("POST", "/api/contatos/mesclar")
+    def r_contatos_mesclar(self):
+        d = self._corpo()
+        return plataforma().mesclar_contatos(self.ator, str(d.get("manter_id") or ""), str(d.get("remover_id") or ""))
 
     @rota("GET", "/api/contatos/{cid}")
     def r_contato(self, cid):
@@ -606,7 +639,7 @@ class Handler(BaseHTTPRequestHandler):
     @rota("POST", "/api/fluxos/simular")
     def r_fluxo_simular_livre(self):
         dados = self._corpo()
-        return plataforma().simular_fluxo(self.ator, None, dados.get("etapas") or [], dados.get("entradas") or [])
+        return plataforma().simular_fluxo(self.ator, None, dados.get("etapas") or [], dados.get("entradas") or [], dados.get("como"))
 
     @rota("GET", "/api/fluxos/{fid}")
     def r_fluxo(self, fid):
@@ -618,7 +651,7 @@ class Handler(BaseHTTPRequestHandler):
 
     @rota("POST", "/api/fluxos/{fid}/simular")
     def r_fluxo_simular(self, fid):
-        return plataforma().simular_fluxo(self.ator, fid, None, self._corpo().get("entradas") or [])
+        return plataforma().simular_fluxo(self.ator, fid, None, self._corpo().get("entradas") or [], self._corpo().get("como"))
 
     @rota("POST", "/api/fluxos/{fid}/publicar")
     def r_fluxo_publicar(self, fid):
@@ -641,6 +674,34 @@ class Handler(BaseHTTPRequestHandler):
     def r_whatsapp_testar(self, wid):
         dados = self._corpo()
         return plataforma().testar_whatsapp(self.ator, wid, dados.get("numero"), dados.get("texto") or None)
+
+    # ---- WhatsApp por QR Code (WhatsApp Web). Não é a conexão oficial da Meta; a ponte roda neste servidor.
+    @rota("POST", "/api/whatsapp/qr")
+    def r_whatsapp_qr_conectar(self):
+        return plataforma().conectar_whatsapp_qr(self.ator, self._corpo().get("nome"))
+
+    @rota("GET", "/api/whatsapp/canais/{wid}/qr")
+    def r_whatsapp_qr_estado(self, wid):
+        return plataforma().estado_whatsapp_qr(self.ator, wid)
+
+    @rota("POST", "/api/whatsapp/canais/{wid}/desconectar")
+    def r_whatsapp_qr_desconectar(self, wid):
+        return plataforma().desconectar_whatsapp_qr(self.ator, wid)
+
+    @rota("POST", "/webhooks/whatsapp-qr", "meta")
+    def r_whatsapp_qr_aviso(self):
+        # Só a ponte (neste mesmo servidor) chama aqui, com o segredo que fica na pasta de dados.
+        from modules.atendimento.plataforma import ponte_qr
+        enviado = self.headers.get("X-Segredo") or ""
+        if not self._do_proprio_computador() or not enviado or not secrets.compare_digest(enviado, ponte_qr.segredo(pasta_dados())):
+            print("[WhatsApp QR] aviso da ponte recusado (segredo ou origem diferente).", flush=True)
+            raise Resposta(403, b"negado")
+        try:
+            dados = json.loads(self._corpo_bruto(LIMITE_CORPO).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise Resposta(400, b"invalido") from None
+        plataforma().whatsapp_qr_receber(dados if isinstance(dados, dict) else {})
+        raise Resposta(200, b"ok")
 
     @rota("GET", "/webhooks/whatsapp", "meta")
     def r_meta_verificar(self):
@@ -755,7 +816,8 @@ class Handler(BaseHTTPRequestHandler):
             recursos_off = recursos_off | set(self.ator.extras.get("recursos_off", ()) if perfil != "owner" else ())
             matriz[perfil] = {r: [a for a in acoes if f"{r}.{a}" not in acoes_off]
                               for r, acoes in permissoes.permissoes_do_perfil(perfil).items() if r not in recursos_off}
-        return {"usuarios": usuarios,
+        cargos = [{"id": g["id"], "nome": g["nome"], "nivel": g["nivel"]} for g in p.listar_cargos(self.ator) if g["ativo"]] if EDICAO == "church" else None
+        return {"usuarios": usuarios, "cargos": cargos,
                 "perfis": [{"id": x, "nome": nomes.get(x) or permissoes.NOMES_PERFIS[x]} for x in permissoes.perfis_que_pode_criar(self.ator.perfil)],
                 "nomes_perfis": {x: nomes.get(x) for x in permissoes.PERFIS if nomes.get(x)},
                 "matriz": matriz}
@@ -764,12 +826,31 @@ class Handler(BaseHTTPRequestHandler):
     def r_usuario_criar(self):
         d = self._corpo()
         usuario, temporaria = plataforma().criar_usuario(self.ator, d.get("nome"), d.get("email"), d.get("perfil"),
-                                                         d.get("senha") or None, d.get("fila_id") or None, d.get("contato_id") or None)
+                                                         d.get("senha") or None, d.get("fila_id") or None, d.get("contato_id") or None,
+                                                         cargo_id=d.get("cargo_id") or None)
         return {"usuario": usuario, "senha_temporaria": temporaria}
 
     @rota("PUT", "/api/usuarios/{uid}")
     def r_usuario_editar(self, uid):
         return plataforma().editar_usuario(self.ator, uid, self._corpo())
+
+    # ---------------------------------------------------------------- cargos da igreja (pastor, presbítero, diácono…)
+    @rota("GET", "/api/cargos")
+    def r_cargos(self):
+        p = plataforma()
+        return {"cargos": p.listar_cargos(self.ator), "catalogo": p.catalogo_cargos()}
+
+    @rota("POST", "/api/cargos")
+    def r_cargo_criar(self):
+        return plataforma().salvar_cargo(self.ator, self._corpo())
+
+    @rota("PUT", "/api/cargos/{cid}")
+    def r_cargo_editar(self, cid):
+        return plataforma().salvar_cargo(self.ator, self._corpo(), cid)
+
+    @rota("POST", "/api/cargos/{cid}/excluir")
+    def r_cargo_excluir(self, cid):
+        return plataforma().excluir_cargo(self.ator, cid)
 
     @rota("POST", "/api/usuarios/{uid}/senha")
     def r_usuario_senha(self, uid):
@@ -886,6 +967,18 @@ class Handler(BaseHTTPRequestHandler):
     def r_sistema_admin(self, eid):
         d = self._corpo()
         return plataforma().criar_admin_da_sede(self.ator, eid, d.get("nome"), d.get("email"))
+
+    @rota("GET", "/api/sistema/convites-teste")
+    def r_sistema_convites(self):
+        return plataforma().listar_convites_teste(self.ator)
+
+    @rota("POST", "/api/sistema/convites-teste")
+    def r_sistema_convite_criar(self):
+        return plataforma().criar_convite_teste(self.ator, self._corpo().get("nome"))
+
+    @rota("POST", "/api/sistema/convites-teste/{uid}/encerrar")
+    def r_sistema_convite_encerrar(self, uid):
+        return plataforma().encerrar_convite_teste(self.ator, uid)
 
     @rota("GET", "/api/sistema/igrejas/{eid}/personalizacao")
     def r_sistema_personalizacao(self, eid):
@@ -1010,6 +1103,7 @@ ROTAS_DO_CRIADOR = frozenset({
     "seguranca", "2fa_iniciar", "2fa_ativar", "2fa_desativar", "sessao_encerrar",
     "empresas", "empresa_criar", "empresa_editar",
     "sistema", "sistema_recursos", "sistema_admin", "sistema_erros_vistos",
+    "sistema_convites", "sistema_convite_criar", "sistema_convite_encerrar",
     "sistema_personalizacao", "sistema_personalizacao_salvar",
 })
 
@@ -1038,6 +1132,32 @@ class Servidor(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+_JANELA: dict = {"ultimo": None, "saiu": None}
+ESPERA_PRIMEIRA_JANELA = 120   # segundos para a janela abrir pela primeira vez
+SILENCIO_MAXIMO = 180          # sem sinal da janela (ela avisa a cada 20 s; minimizada, 1 por minuto)
+TOLERANCIA_SAIDA = 10          # a janela avisou que saiu e ninguém voltou: encerra
+
+
+def _vigiar_janela(servidor, parar: threading.Event) -> None:
+    """Encerra o servidor local quando a janela do sistema é fechada (ligado por RMD_FECHAR_SEM_JANELA=1)."""
+    inicio = anterior = time.monotonic()
+    while not parar.wait(2):
+        agora = time.monotonic()
+        if agora - anterior > 20:      # o computador dormiu: recomeça a contar, senão encerraria ao acordar
+            _JANELA["ultimo"] = agora if _JANELA["ultimo"] else None
+            inicio = agora
+        anterior = agora
+        ultimo, saiu = _JANELA["ultimo"], _JANELA["saiu"]
+        if ultimo is None:
+            sem_janela = agora - inicio > ESPERA_PRIMEIRA_JANELA
+        else:
+            sem_janela = (saiu is not None and saiu >= ultimo and agora - saiu > TOLERANCIA_SAIDA) or agora - ultimo > SILENCIO_MAXIMO
+        if sem_janela:
+            print(f"[{NOME_EDICAO}] Janela fechada: encerrando o servidor deste computador.", flush=True)
+            threading.Thread(target=servidor.shutdown, daemon=True).start()
+            return
+
+
 def criar_servidor(host: str = HOST, porta: int = PORT) -> ThreadingHTTPServer:
     if EDICAO == "church":
         try:
@@ -1049,6 +1169,15 @@ def criar_servidor(host: str = HOST, porta: int = PORT) -> ThreadingHTTPServer:
     parar = threading.Event()
     servidor.parar_rotina = parar
     threading.Thread(target=_rotina, args=(parar,), daemon=True, name="RMDAtendimentoRotina").start()
+    try:  # conexão do WhatsApp por QR Code: sobe a ponte (Node) se existir; nunca impede o sistema de abrir
+        from modules.atendimento.plataforma import ponte_qr
+        if ponte_qr.iniciar_ponte(pasta_dados(), servidor.server_address[1]):
+            import atexit
+            atexit.register(ponte_qr.parar_ponte)
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+    if os.getenv("RMD_FECHAR_SEM_JANELA", "").strip() == "1":
+        threading.Thread(target=_vigiar_janela, args=(servidor, parar), daemon=True, name="RMDAtendimentoJanela").start()
     return servidor
 
 
